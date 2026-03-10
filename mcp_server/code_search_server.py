@@ -503,7 +503,11 @@ class CodeSearchServer:
             return json.dumps({"error": error_msg})
 
     def get_index_status(self) -> str:
-        """Implementation of get_index_status tool."""
+        """Implementation of get_index_status tool.
+
+        Returns index statistics including storage health metrics:
+        version_count, storage_size_mb (from LanceDB table stats).
+        """
         try:
             index_manager = self.get_index_manager()
             stats = index_manager.get_stats()

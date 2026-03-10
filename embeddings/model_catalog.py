@@ -86,6 +86,20 @@ MODEL_CATALOG = {
         description="Unsloth-optimised Qwen3-Embedding-4B for RTX 5080 (16 GB VRAM).",
         recommended_for="Primary GPU-accelerated model for high-quality local code search.",
     ),
+    # ── Unsloth-optimised Qwen3-Embedding-8B ─────────────────────────
+    # Ranks #1 on MTEB multilingual.  Requires 24 GB+ VRAM recommended
+    # (16 GB weights in float16, plus activation memory during encoding).
+    # Suitable for users with high-end GPUs who want the best embedding
+    # quality available locally.
+    "unsloth/Qwen3-Embedding-8B": EmbeddingModelConfig(
+        model_name="unsloth/Qwen3-Embedding-8B",
+        short_name="qwen-embed-8b",
+        query_prefix=QWEN3_QUERY_INSTRUCTION,
+        document_prefix="",  # Documents must NOT be prefixed
+        embedding_dimension=4096,
+        description="Unsloth-optimised Qwen3-Embedding-8B — top MTEB multilingual quality, 24 GB+ VRAM recommended.",
+        recommended_for="Users with high-end GPUs (RTX 4090/5090, A100) who want maximum embedding quality.",
+    ),
     "Salesforce/SFR-Embedding-Code-400M_R": EmbeddingModelConfig(
         model_name="Salesforce/SFR-Embedding-Code-400M_R",
         short_name="sfr-code-400m",

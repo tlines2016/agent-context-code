@@ -42,9 +42,9 @@ claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA
 
 ## Key Paths and Components
 
-- `search/indexer.py`: LanceDB index manager
+- `search/indexer.py`: LanceDB index manager (compaction, scalar indexes, health stats)
 - `search/searcher.py`: retrieval and ranking
-- `search/incremental_indexer.py`: Merkle-driven incremental flow
+- `search/incremental_indexer.py`: Merkle-driven incremental flow (calls `optimize()` after indexing)
 - `mcp_server/code_search_server.py`: indexing/search business logic
 - `scripts/install.sh`, `scripts/install.ps1`: installer/update workflows
 - `scripts/download_model_standalone.py`: model bootstrap
@@ -58,7 +58,12 @@ All user data stays under `~/.claude_code_search` (or `CODE_SEARCH_STORAGE`):
 - `install_config.json` for persisted model choice
 - `projects/{project}_{hash}/` for per-project index and snapshots
 
+Directory permissions are set to `0700` on Unix/macOS (owner-only).
 Never move index database files into the target workspace.
+
+LanceDB tables are automatically compacted after each indexing session
+(`optimize()` with 1-day version retention). Scalar indexes (BTREE on
+`relative_path`/`chunk_id`, BITMAP on `chunk_type`) accelerate filtered queries.
 
 ## Model Notes
 

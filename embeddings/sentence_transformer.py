@@ -76,13 +76,19 @@ class SentenceTransformerModel(EmbeddingModel):
     def encode(self, texts: list[str], **kwargs) -> np.ndarray:
         """Encode texts using SentenceTransformer.
 
+        Always produces L2-normalized embeddings (``normalize_embeddings=True``).
+        This matches the design intent of models like Qwen3-Embedding which
+        produce normalized output, and ensures consistent cosine similarity
+        scores regardless of model.
+
         Args:
             texts: List of texts to encode
             **kwargs: Additional arguments passed to SentenceTransformer.encode()
 
         Returns:
-            Array of embeddings
+            Array of L2-normalized embeddings
         """
+        kwargs['normalize_embeddings'] = True
         return self.model.encode(texts, **kwargs)
 
     def get_embedding_dimension(self) -> int:

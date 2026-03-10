@@ -155,7 +155,11 @@ class IncrementalIndexer:
             # Update index
             self.indexer.set_indexing_config(indexing_config)
             self.indexer.save_index()
-            
+
+            # Compact fragments and clean up old versions created by
+            # the add/delete operations above.
+            self.indexer.optimize()
+
             return IncrementalIndexResult(
                 files_added=len(changes.added),
                 files_removed=len(changes.removed),
@@ -250,7 +254,10 @@ class IncrementalIndexer:
             
             # Save index
             self.indexer.save_index()
-            
+
+            # Compact fragments and clean up old versions.
+            self.indexer.optimize()
+
             return IncrementalIndexResult(
                 files_added=len(supported_files),
                 files_removed=0,

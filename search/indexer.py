@@ -16,6 +16,12 @@ Architecture changes vs. the FAISS backend
   file chunks *and* insert replacements in a single pass.
 * **Arrow/Pandas interop** — search results are returned as DataFrames
   internally, making filtering and post-processing much cleaner.
+* **Automatic compaction** — ``optimize()`` runs after each indexing
+  session to compact fragments and clean up old versions, preventing
+  unbounded disk growth from accumulated Lance fragments and tombstones.
+* **Scalar indexes** — BTREE indexes on ``relative_path`` and
+  ``chunk_id``, plus a BITMAP index on ``chunk_type``, accelerate
+  WHERE clause filtering on both standalone and vector+filter queries.
 
 The public API of ``CodeIndexManager`` is preserved so that
 ``IncrementalIndexer``, ``IntelligentSearcher``, and ``CodeSearchServer``
@@ -24,6 +30,7 @@ continue to work with minimal (mostly zero) changes.
 
 import json
 import logging
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -155,6 +162,8 @@ class CodeIndexManager:
                 # was originally created.
                 self._recover_embedding_dim()
 
+                self._ensure_scalar_indexes()
+
                 self._logger.info(
                     "Opened existing LanceDB table '%s' with %d rows (dim=%s)",
                     TABLE_NAME,
@@ -210,6 +219,36 @@ class CodeIndexManager:
         self._logger.info(
             "Created LanceDB table '%s' (dim=%d)", TABLE_NAME, embedding_dim,
         )
+        self._ensure_scalar_indexes()
+
+    def _ensure_scalar_indexes(self) -> None:
+        """Create scalar indexes on filtered columns if they don't exist.
+
+        - BTREE on ``relative_path`` (high cardinality — many unique file paths)
+        - BITMAP on ``chunk_type`` (low cardinality — ~5 unique values)
+        - BTREE on ``chunk_id`` (used in ``get_chunk_by_id()`` lookups)
+
+        Scalar indexes accelerate WHERE clause filtering on both standalone
+        queries and vector+filter searches.  They are updated during
+        ``table.optimize()`` (see ``optimize()`` method).
+
+        Uses ``replace=False`` so LanceDB skips creation when the index
+        already exists, making this safe to call on every table open
+        without rebuilding indexes or adding startup latency.
+        """
+        if self._table is None:
+            return
+        for col, idx_type in [
+            ("relative_path", "BTREE"),
+            ("chunk_type", "BITMAP"),
+            ("chunk_id", "BTREE"),
+        ]:
+            try:
+                self._table.create_scalar_index(col, index_type=idx_type, replace=False)
+                self._logger.info("Created %s scalar index on '%s'", idx_type, col)
+            except Exception:
+                # Index already exists — skip silently.
+                pass
 
     # ------------------------------------------------------------------
     # Public API — add / search / remove / clear
@@ -404,6 +443,26 @@ class CodeIndexManager:
 
         self._logger.info("Index cleared")
 
+    def optimize(self) -> None:
+        """Compact fragments and clean up old versions.
+
+        Every ``table.add()`` and ``table.delete()`` creates new Lance
+        fragments and versions.  Without periodic compaction, disk usage
+        grows unboundedly and deletes remain as soft tombstones.  Call
+        this once after a batch of add/delete operations (not per-row).
+
+        Uses ``cleanup_older_than=timedelta(days=1)`` to keep one day of
+        history — safe for the single-writer pattern and allows rollback
+        if needed.
+        """
+        if self._table is None:
+            return
+        try:
+            self._table.optimize(cleanup_older_than=timedelta(days=1))
+            self._logger.info("LanceDB table optimized (compaction + version cleanup)")
+        except Exception as exc:
+            self._logger.warning("LanceDB optimize failed: %s", exc)
+
     def save_index(self) -> None:
         """Persist stats to disk.
 
@@ -425,12 +484,7 @@ class CodeIndexManager:
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve chunk metadata by its unique ID.
 
-        Performance note: This uses a filtered scan rather than a
-        primary-key lookup because LanceDB does not have a built-in
-        unique-key index.  For typical project sizes (<100k chunks)
-        the latency is negligible.  If this becomes a bottleneck on
-        very large indices, consider adding a scalar index on the
-        ``chunk_id`` column.
+        A BTREE scalar index on ``chunk_id`` accelerates this lookup.
         """
         if self._table is None:
             return None
@@ -591,6 +645,23 @@ class CodeIndexManager:
                     for tag in json.loads(row.get("tags", "[]") or "[]"):
                         tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
+        # ── Storage health metrics ──────────────────────────────────────
+        version_count = None
+        storage_size_mb = None
+        try:
+            if self._table is not None:
+                versions = self._table.list_versions()
+                version_count = len(versions)
+        except Exception:
+            pass
+        try:
+            lance_size = sum(
+                f.stat().st_size for f in self._lance_dir.rglob("*") if f.is_file()
+            )
+            storage_size_mb = round(lance_size / (1024 * 1024), 2)
+        except Exception:
+            pass
+
         stats: Dict[str, Any] = {
             "total_chunks": total,
             "index_size": total,
@@ -606,6 +677,8 @@ class CodeIndexManager:
             "top_tags": dict(
                 sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:20]
             ),
+            "version_count": version_count,
+            "storage_size_mb": storage_size_mb,
         }
         self._file_chunk_counts = file_counts
         self._stats_cache = stats
@@ -614,6 +687,21 @@ class CodeIndexManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _escape_like_pattern(value: str) -> str:
+        """Escape a value for safe use inside a SQL LIKE pattern.
+
+        Escapes single quotes (SQL string delimiter), ``%`` (matches any
+        sequence), and ``_`` (matches any single character) so that
+        user-provided filter values are treated as literal strings.
+        """
+        return (
+            value
+            .replace("'", "''")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
 
     @staticmethod
     def _build_where_clause(filters: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -628,7 +716,7 @@ class CodeIndexManager:
                 # relative_path.  LanceDB uses SQL LIKE for patterns.
                 pattern_clauses = []
                 for pattern in value:
-                    safe = pattern.replace("'", "''")
+                    safe = CodeIndexManager._escape_like_pattern(pattern)
                     pattern_clauses.append(
                         f"relative_path LIKE '%{safe}%'"
                     )
@@ -645,7 +733,7 @@ class CodeIndexManager:
                 folders = value if isinstance(value, list) else [value]
                 fc = []
                 for folder in folders:
-                    safe = folder.replace("'", "''").replace('"', '""')
+                    safe = CodeIndexManager._escape_like_pattern(folder).replace('"', '""')
                     fc.append(f'folder_structure LIKE \'%"{safe}"%\'')
                 if fc:
                     clauses.append("(" + " OR ".join(fc) + ")")
@@ -657,7 +745,7 @@ class CodeIndexManager:
                 tags = value if isinstance(value, list) else [value]
                 tc = []
                 for tag in tags:
-                    safe = tag.replace("'", "''").replace('"', '""')
+                    safe = CodeIndexManager._escape_like_pattern(tag).replace('"', '""')
                     tc.append(f'tags LIKE \'%"{safe}"%\'')
                 if tc:
                     clauses.append("(" + " OR ".join(tc) + ")")

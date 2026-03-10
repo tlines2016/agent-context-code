@@ -65,6 +65,17 @@ def get_storage_dir() -> Path:
             f"Cannot create storage directory '{storage_dir}': {exc}\n"
             "Set CODE_SEARCH_STORAGE to a writable path and try again."
         ) from exc
+
+    # Restrict directory permissions to the owning user on Unix/macOS.
+    # The index stores full source code in the 'content' column, so on
+    # shared machines other users should not be able to read it.
+    # Windows default ACLs already restrict to the creating user.
+    if os.name != 'nt':
+        try:
+            os.chmod(storage_dir, 0o700)
+        except OSError:
+            pass  # Best-effort; don't fail if permissions can't be set.
+
     return storage_dir
 
 

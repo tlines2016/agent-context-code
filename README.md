@@ -33,22 +33,55 @@ The canonical repository is
 
 ## Why This Exists
 
-Most coding agents are great at reasoning, but weak at searching large codebases
-without burning context. This project gives them a local semantic search layer.
+Coding agents are great at reasoning but tend to struggle when they need to find
+something specific in a large codebase — they burn through context or fall back
+to grep. This project gives them a local semantic search layer so they can look
+things up by meaning, not just by filename or string match.
 
-- Ask for concepts like `where do we validate auth tokens?` instead of guessing filenames.
-- Keep your source code local instead of shipping it to a hosted search service.
-- Reuse a persistent local index across sessions instead of re-explaining the repo.
-- Work through MCP so the same backend can support more than one agent client over time.
+- **Search by intent** — ask for `where do we validate auth tokens?` instead of guessing filenames.
+- **Everything stays local** — your source code never leaves your machine. No hosted services, no uploads.
+- **Persistent index** — the index survives across sessions, so you don't have to re-explain your repo every time.
+- **Agent-agnostic** — built on MCP, so any compatible agent client can use it (Claude Code is the best-tested today).
 
 ## What It Uses Today
 
-- **Vector database:** LanceDB
-- **Storage root:** `~/.claude_code_search` or `CODE_SEARCH_STORAGE`
-- **Per-project storage:** `~/.claude_code_search/projects/{name}_{hash}`
-- **Chunking:** Python AST plus tree-sitter and structured config chunking
-- **Default model:** `Qwen/Qwen3-Embedding-0.6B` (non-gated, works on CPU or GPU)
-- **Best-documented client today:** Claude Code via MCP
+| Component | Details |
+|-----------|---------|
+| **Vector database** | LanceDB (embedded, serverless — like SQLite for vectors) |
+| **Storage** | `~/.claude_code_search` (or `CODE_SEARCH_STORAGE` env var) |
+| **Per-project index** | `~/.claude_code_search/projects/{name}_{hash}` |
+| **Chunking** | Python AST, tree-sitter, and structured config parsing |
+| **Default model** | `Qwen/Qwen3-Embedding-0.6B` (non-gated, runs on CPU or GPU) |
+| **Primary client** | Claude Code via MCP |
+
+## How It Works
+
+Traditional code search (grep, ripgrep, `Ctrl+F`) matches exact strings. That
+works when you know the variable name or error message, but falls short when
+you're looking for *concepts* — "where does the app handle retries?" won't match
+`except ConnectionError: time.sleep(backoff)`.
+
+AGENT Context Local bridges that gap with **vector search**:
+
+1. **Chunk** — your source files are split into meaningful pieces (functions,
+   classes, config blocks) using language-aware parsers, not arbitrary line counts.
+2. **Embed** — each chunk is passed through a local embedding model that converts
+   the code into a high-dimensional vector capturing its semantic meaning.
+3. **Index** — the vectors are stored in a LanceDB table alongside the original
+   code and metadata (file path, line numbers, chunk type, etc.).
+4. **Search** — when you ask a question, the query is embedded the same way and
+   compared against all stored vectors using cosine similarity. The closest
+   matches are the most semantically relevant chunks.
+
+This approach is efficient because vector similarity comparison is a simple math
+operation — even brute-force search over 50,000 chunks completes in under 20ms.
+The embedding model runs locally (no API calls), and LanceDB writes directly to
+disk with no server process, so the whole pipeline has minimal overhead.
+
+The index is also **incremental**: a Merkle tree tracks file changes between runs,
+so re-indexing only processes files that actually changed. Combined with automatic
+**compaction** (which cleans up old versions and deleted data), the index stays
+lean over time without any manual maintenance.
 
 ## Quick Start
 
@@ -188,7 +221,8 @@ to register the MCP server from a Windows terminal afterward.
 
 ### Choosing a different model
 
-To use a higher-end model (e.g. for GPU), set `CODE_SEARCH_MODEL` before install:
+If you have a GPU and want higher-quality embeddings, you can pick a different
+model by setting `CODE_SEARCH_MODEL` before running the installer:
 
 ```bash
 export CODE_SEARCH_MODEL="unsloth/Qwen3-Embedding-4B"
@@ -204,6 +238,7 @@ Other options:
 
 - `Qwen/Qwen3-Embedding-0.6B`: default, non-gated, CPU-friendly
 - `unsloth/Qwen3-Embedding-4B`: higher quality, needs GPU with ~8 GB VRAM
+- `unsloth/Qwen3-Embedding-8B`: top MTEB multilingual quality, needs GPU with 24 GB+ VRAM
 - `google/embeddinggemma-300m`: legacy default (gated — requires HF auth, see [Advanced: Using Gated Models](#advanced-using-gated-models))
 - `Salesforce/SFR-Embedding-Code-400M_R`: code-search-focused alternative
 
@@ -274,8 +309,8 @@ There are two ways to interact with AGENT Context Local:
 
 ## Recommended: Add to Your Project
 
-Help Claude (and other agents) discover and use code search automatically by
-adding a snippet to your project's instruction file.
+You can help Claude (and other agents) automatically discover and use code
+search by dropping a short snippet into your project's instruction file.
 
 ### For CLAUDE.md (Claude Code reads this automatically)
 
@@ -300,10 +335,10 @@ support MCP.
 
 ## If Model Download Failed
 
-The installer treats software install and model readiness as separate states.
-Repo install can succeed even if model download needs fixing.
+Don't worry — the installer separates software installation from model download.
+Your install is fine; the model just needs another try.
 
-Retry model download directly:
+To retry the model download:
 
 ### macOS / Linux / Git Bash / WSL
 
@@ -320,7 +355,7 @@ uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/downloa
 ## Storage Layout
 
 ```text
-~/.claude_code_search/
+~/.claude_code_search/          # 0700 on Unix/macOS (owner-only access)
 ├── models/
 ├── install_config.json
 └── projects/
@@ -333,17 +368,32 @@ uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/downloa
         └── snapshots/
 ```
 
-The indexed workspace should stay clean. Database files belong in the central
-storage directory, not inside the project being indexed.
+Your project workspace stays clean — all database files live in this central
+directory, never inside the project being indexed.
+
+On Unix and macOS the storage directory is locked down to your user (`0700`
+permissions) so other accounts on a shared machine can't read your indexed
+source. On Windows the default ACLs already handle this.
+
+### Index Maintenance
+
+You shouldn't need to think about this, but it's here if you're curious.
+Each time you add, modify, or delete files, LanceDB creates new internal
+fragments and version snapshots. The indexer automatically compacts these
+after each session — cleaning up old versions (keeping one day of history)
+and reclaiming disk space. If you ever want to check how things look, run
+`get_index_status` to see the current storage size and version count.
 
 ## Optional: Two-Stage Reranker
 
-For higher precision, you can enable an optional Qwen3-Reranker-4B that
-re-scores vector search candidates. This is a two-stage pipeline:
+If you want even more precise results, you can turn on a second-pass reranker.
+It works like this: vector search first pulls back a broad set of candidates,
+then the Qwen3-Reranker-4B model reads each candidate against your query and
+re-scores them for relevance.
 
-1. **Recall:** Vector search returns top-N candidates (N=50 default)
-2. **Rerank:** Qwen3-Reranker-4B scores each (query, passage) pair
-3. **Return:** Top-K reranked results
+1. **Recall** — vector search returns the top 50 candidates
+2. **Rerank** — Qwen3-Reranker-4B reads each (query, passage) pair and re-scores
+3. **Return** — the best results after reranking
 
 ### Install the reranker model
 
@@ -367,15 +417,15 @@ python scripts/cli.py config reranker off
 
 ### Requirements
 
-- ~8 GB VRAM on GPU, or CPU with higher latency (30-60s for 50 passages)
-- Dual model (embedding 4B + reranker 4B) needs ~16 GB VRAM total
-- The reranker is fully optional — search works without it
+- About 8 GB VRAM on GPU, or CPU with higher latency (30-60s for 50 passages)
+- Running both the 4B embedding model and 4B reranker together needs roughly 16 GB VRAM
+- The reranker is entirely optional — search works great without it
 
 ## AMD GPU Support (ROCm)
 
-AMD GPUs are supported through PyTorch's ROCm build. When ROCm is installed,
-`torch.cuda.is_available()` returns `True` and the existing device detection
-works automatically — no code changes needed.
+If you have an AMD GPU, it should work out of the box once you install the
+ROCm build of PyTorch. The existing device detection picks it up automatically —
+no configuration needed on our side.
 
 ### Install PyTorch with ROCm support
 
@@ -541,4 +591,7 @@ Canonical public repo:
 
 ## Acknowledgements
 
-This project was originally inspired by and built upon the foundational concepts of claude-context-local by [Author Name]. It has since been heavily modified and expanded into a standalone tool to support agent-agnostic workflows, dedicated vector databases, reranking, and local embedding models.
+This project was originally inspired by the foundational concepts of
+claude-context-local. It has since been significantly reworked into a standalone
+tool supporting agent-agnostic workflows, a dedicated vector database, reranking,
+and local embedding models.
