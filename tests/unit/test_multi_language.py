@@ -340,7 +340,7 @@ class TestMultiLanguageChunker:
 
     def test_indexing_config_can_exclude_extensions(self, tmp_path):
         """Project config should make it easy to exclude noisy file types."""
-        (tmp_path / ".claude-context-local.json").write_text(
+        (tmp_path / ".agent-context-code.json").write_text(
             '{"exclude_extensions": [".toml"]}',
             encoding="utf-8",
         )
@@ -356,7 +356,7 @@ class TestMultiLanguageChunker:
 
     def test_large_structured_files_can_be_skipped_by_config(self, tmp_path):
         """Structured file limits should prevent huge config files from muddying the index."""
-        (tmp_path / ".claude-context-local.json").write_text(
+        (tmp_path / ".agent-context-code.json").write_text(
             '{"max_structured_file_lines": 3}',
             encoding="utf-8",
         )
@@ -384,7 +384,7 @@ class TestMultiLanguageChunker:
         monkeypatch.delenv("CODE_SEARCH_MAX_STRUCTURED_FILE_LINES", raising=False)
         monkeypatch.delenv("CODE_SEARCH_MAX_STRUCTURED_FILE_BYTES", raising=False)
 
-        (tmp_path / ".claude-context-local.json").write_bytes(b"\xff\xfe\x00\x00")
+        (tmp_path / ".agent-context-code.json").write_bytes(b"\xff\xfe\x00\x00")
 
         chunker = MultiLanguageChunker(str(tmp_path))
 
@@ -438,8 +438,8 @@ class TestMultiLanguageChunker:
         assert "2024-01-01" in all_content
 
     def test_invalid_non_dict_config_file_is_ignored(self, tmp_path):
-        """A .claude-context-local.json that is not a JSON object should be skipped gracefully."""
-        (tmp_path / ".claude-context-local.json").write_text(
+        """A .agent-context-code.json that is not a JSON object should be skipped gracefully."""
+        (tmp_path / ".agent-context-code.json").write_text(
             '["just", "a", "list"]', encoding="utf-8"
         )
         (tmp_path / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")

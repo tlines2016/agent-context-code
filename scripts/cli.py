@@ -46,8 +46,8 @@ from common_utils import (
     save_reranker_config,
 )
 
-INSTALL_SH_URL = "https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.sh"
-INSTALL_PS1_URL = "https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.ps1"
+INSTALL_SH_URL = "https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh"
+INSTALL_PS1_URL = "https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1"
 
 # Models that require a HuggingFace account, license acceptance, and auth
 # token to download. Referenced by setup-guide and models sub-commands.
@@ -138,8 +138,8 @@ def get_platform_label() -> str:
 def get_default_install_dir() -> Path:
     """Return the expected installation directory for this platform.
 
-    - Windows: ``%LOCALAPPDATA%\\claude-context-local``
-    - macOS/Linux: ``~/.local/share/claude-context-local``
+    - Windows: ``%LOCALAPPDATA%\\agent-context-code``
+    - macOS/Linux: ``~/.local/share/agent-context-code``
 
     This must stay in sync with the ``PROJECT_DIR`` / ``$ProjectDir`` variables
     in ``scripts/install.sh`` and ``scripts/install.ps1``.
@@ -147,9 +147,9 @@ def get_default_install_dir() -> Path:
     if is_windows():
         local_app = os.environ.get("LOCALAPPDATA", "")
         if local_app:
-            return Path(local_app) / "claude-context-local"
-        return Path.home() / "AppData" / "Local" / "claude-context-local"
-    return Path.home() / ".local" / "share" / "claude-context-local"
+            return Path(local_app) / "agent-context-code"
+        return Path.home() / "AppData" / "Local" / "agent-context-code"
+    return Path.home() / ".local" / "share" / "agent-context-code"
 
 
 def get_claude_config_paths() -> list:
@@ -270,7 +270,7 @@ def cmd_help() -> None:
 
 def cmd_version() -> None:
     """Print version and platform information."""
-    print(f"claude-context-local  {VERSION}")
+    print(f"agent-context-code  {VERSION}")
     print(f"Platform:  {get_platform_label()} ({platform.machine()})")
     print(f"Python:    {platform.python_version()}")
 

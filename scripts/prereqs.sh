@@ -8,7 +8,7 @@ set -euo pipefail
 # missing. Every install is opt-in — nothing happens without your "y".
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/prereqs.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/prereqs.sh | bash
 #   # or locally:
 #   bash scripts/prereqs.sh
 # ─────────────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ if [[ "$NON_INTERACTIVE" -eq 1 ]]; then
   printf "${YELLOW}${BOLD}Running non-interactively (piped from curl).${NC}\n"
   printf "The script will check prerequisites but cannot install them in this mode.\n"
   printf "To install missing items, download and run locally:\n\n"
-  printf "  ${CYAN}curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/prereqs.sh -o prereqs.sh${NC}\n"
+  printf "  ${CYAN}curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/prereqs.sh -o prereqs.sh${NC}\n"
   printf "  ${CYAN}bash prereqs.sh${NC}\n\n"
 fi
 
@@ -326,7 +326,7 @@ if [[ "$ALL_GOOD" -eq 1 ]]; then
   printf "${GREEN}${BOLD}All prerequisites satisfied!${NC}\n"
   printf "You're ready to install AGENT Context Local.\n\n"
   printf "${BOLD}Next step:${NC}\n"
-  printf "  curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.sh | bash\n\n"
+  printf "  curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh | bash\n\n"
 else
   printf "${YELLOW}Some prerequisites are still missing.${NC}\n"
   printf "Install them manually, restart your terminal, then re-run:\n"

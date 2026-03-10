@@ -1,1 +1,1 @@
-"""Test fixtures for AGENT Context Local (claude-context-local) tests."""
+"""Test fixtures for AGENT Context Local (agent-context-code) tests."""

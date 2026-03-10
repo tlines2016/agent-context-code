@@ -1,5 +1,5 @@
 [project]
-name = "claude-context-local"
+name = "agent-context-code"
 version = "0.1.0"
 
 [tool.ruff]

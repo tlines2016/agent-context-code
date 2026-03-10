@@ -306,7 +306,7 @@ url = "sqlite:///game.db"
         assert initial_result.success
         assert any(path.endswith('settings.toml') for path in indexer.get_stats()['file_chunk_counts'])
 
-        (self.test_path / '.claude-context-local.json').write_text(
+        (self.test_path / '.agent-context-code.json').write_text(
             '{"exclude_extensions": [".toml"]}',
             encoding='utf-8'
         )

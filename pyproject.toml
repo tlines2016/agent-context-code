@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-context-local"
+name = "agent-context-code"
 version = "0.1.0"
 # Vector backend: LanceDB (embedded, serverless). Default model: Qwen/Qwen3-Embedding-0.6B.
 description = "Local semantic code search for Claude Code (MCP) using LanceDB, Unsloth Qwen3-Embedding, and AST/tree-sitter chunking. 100% local embeddings and indexing."
@@ -75,10 +75,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tlines2016/claude-context-local"
-Repository = "https://github.com/tlines2016/claude-context-local"
-Documentation = "https://github.com/tlines2016/claude-context-local#readme"
-Issues = "https://github.com/tlines2016/claude-context-local/issues"
+Homepage = "https://github.com/tlines2016/agent-context-code"
+Repository = "https://github.com/tlines2016/agent-context-code"
+Documentation = "https://github.com/tlines2016/agent-context-code#readme"
+Issues = "https://github.com/tlines2016/agent-context-code/issues"
 
 [tool.setuptools.packages.find]
 include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*"]

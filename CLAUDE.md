@@ -5,8 +5,7 @@ Claude Code working guide for this repository.
 ## Project Identity
 
 - Product direction: **AGENT Context Local**
-- Compatibility names in code/paths: `claude-context-local`
-- Canonical repo: `tlines2016/claude-context-local`
+- Canonical repo: `tlines2016/agent-context-code`
 
 ## What This Repo Does
 
@@ -32,13 +31,13 @@ Remote install commands are documented in `README.md`.
 macOS/Linux:
 
 ```bash
-claude mcp add code-search --scope user -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py
+claude mcp add code-search --scope user -- uv run --directory ~/.local/share/agent-context-code python mcp_server/server.py
 ```
 
 PowerShell:
 
 ```powershell
-claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA\claude-context-local" python mcp_server/server.py
+claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA\agent-context-code" python mcp_server/server.py
 ```
 
 ## Key Paths and Components

@@ -5,7 +5,7 @@
 # missing. Every install is opt-in — nothing happens without your "y".
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/prereqs.ps1 | iex
+#   irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/prereqs.ps1 | iex
 #   # or locally:
 #   powershell -ExecutionPolicy Bypass -File scripts\prereqs.ps1
 # ─────────────────────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ if ($AllGood) {
     Write-Host "All prerequisites satisfied!" -ForegroundColor Green
     Write-Host "You're ready to install AGENT Context Local.`n"
     Write-Bold "Next step:"
-    Write-Host '  irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.ps1 | iex'
+    Write-Host '  irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1 | iex'
     Write-Host ""
 } else {
     Write-Host "Some prerequisites are still missing." -ForegroundColor Yellow

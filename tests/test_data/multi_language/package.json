@@ -1,5 +1,5 @@
 {
-  "name": "claude-context-local",
+  "name": "agent-context-code",
   "private": true,
   "scripts": {
     "test": "python tests/run_tests.py",

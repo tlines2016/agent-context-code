@@ -1,9 +1,9 @@
-# AGENTS.md — Guidance for AI Agents Working on claude-context-local
+# AGENTS.md — Guidance for AI Agents Working on agent-context-code
 
 ## Project Overview
 
-This repository is transitioning branding to **AGENT Context Local** while
-keeping compatibility names (`claude-context-local`) in code paths and commands.
+This repository is **AGENT Context Local** (`agent-context-code`), a fully
+local semantic code search service accessible via MCP.
 
 It provides **100% local** semantic code search over project source files:
 
@@ -68,7 +68,7 @@ When updating setup behavior, keep these in sync:
 - `README.md` setup examples
 
 Canonical public repository URL in user-facing docs/scripts:
-`https://github.com/tlines2016/claude-context-local`
+`https://github.com/tlines2016/agent-context-code`
 
 ## Agent Constraints for Safe Changes
 

@@ -28,10 +28,8 @@ AGENT Context Local is a local MCP code-search service that helps agents find
 the right code by meaning instead of exact strings. Your embeddings, vector
 index, and project metadata stay on your machine.
 
-This repository is in a branding transition. Public docs now lead with
-`AGENT Context Local`, but compatibility names such as `claude-context-local`
-still appear in install paths, commands, and config names because they are the
-real names used by the current code.
+The canonical repository is
+[tlines2016/agent-context-code](https://github.com/tlines2016/agent-context-code).
 
 ## Why This Exists
 
@@ -74,19 +72,19 @@ only offers to install what's missing — nothing happens without your approval.
 **macOS / Linux / WSL:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/prereqs.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/prereqs.sh | bash
 ```
 
 **Windows PowerShell:**
 
 ```powershell
-irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/prereqs.ps1 | iex
+irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/prereqs.ps1 | iex
 ```
 
 If PowerShell blocks script execution:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/prereqs.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/prereqs.ps1 | iex"
 ```
 
 The script will tell you when everything is ready and print the next step.
@@ -151,38 +149,38 @@ The default model (`Qwen/Qwen3-Embedding-0.6B`) is **not gated** — no
 HuggingFace account or token needed. Just run the installer.
 
 Review the scripts first if you want:
-[`scripts/install.sh`](https://github.com/tlines2016/claude-context-local/blob/main/scripts/install.sh)
+[`scripts/install.sh`](https://github.com/tlines2016/agent-context-code/blob/main/scripts/install.sh)
 and
-[`scripts/install.ps1`](https://github.com/tlines2016/claude-context-local/blob/main/scripts/install.ps1)
+[`scripts/install.ps1`](https://github.com/tlines2016/agent-context-code/blob/main/scripts/install.ps1)
 
 ### macOS / Linux / Git Bash
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh | bash
 ```
 
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1 | iex
 ```
 
 If PowerShell blocks script execution:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1 | iex"
 ```
 
 ### Windows `cmd.exe`
 
 ```bat
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1 | iex"
 ```
 
 ### WSL2
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh | bash
 ```
 
 If Claude Desktop or Claude Code runs on the Windows side, you may still want
@@ -194,12 +192,12 @@ To use a higher-end model (e.g. for GPU), set `CODE_SEARCH_MODEL` before install
 
 ```bash
 export CODE_SEARCH_MODEL="unsloth/Qwen3-Embedding-4B"
-curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh | bash
 ```
 
 ```powershell
 $env:CODE_SEARCH_MODEL="unsloth/Qwen3-Embedding-4B"
-irm https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1 | iex
 ```
 
 Other options:
@@ -219,13 +217,13 @@ The selected model is persisted to `~/.claude_code_search/install_config.json`.
 ### macOS / Linux / Git Bash / WSL
 
 ```bash
-claude mcp add code-search --scope user -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py
+claude mcp add code-search --scope user -- uv run --directory ~/.local/share/agent-context-code python mcp_server/server.py
 ```
 
 ### Windows PowerShell
 
 ```powershell
-claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA\claude-context-local" python mcp_server/server.py
+claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA\agent-context-code" python mcp_server/server.py
 ```
 
 ## 4. Verify The Install
@@ -239,13 +237,13 @@ You should see `code-search` listed as connected. You can also run diagnostics:
 ### macOS / Linux / Git Bash / WSL
 
 ```bash
-uv run --directory ~/.local/share/claude-context-local python scripts/cli.py doctor
+uv run --directory ~/.local/share/agent-context-code python scripts/cli.py doctor
 ```
 
 ### Windows PowerShell
 
 ```powershell
-uv run --directory "$env:LOCALAPPDATA\claude-context-local" python scripts/cli.py doctor
+uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/cli.py doctor
 ```
 
 ## 5. Use It
@@ -310,13 +308,13 @@ Retry model download directly:
 ### macOS / Linux / Git Bash / WSL
 
 ```bash
-uv run --directory ~/.local/share/claude-context-local python scripts/download_model_standalone.py --storage-dir ~/.claude_code_search --model "Qwen/Qwen3-Embedding-0.6B" -v
+uv run --directory ~/.local/share/agent-context-code python scripts/download_model_standalone.py --storage-dir ~/.claude_code_search --model "Qwen/Qwen3-Embedding-0.6B" -v
 ```
 
 ### Windows PowerShell
 
 ```powershell
-uv run --directory "$env:LOCALAPPDATA\claude-context-local" python scripts/download_model_standalone.py --storage-dir "$env:USERPROFILE\.claude_code_search" --model "Qwen/Qwen3-Embedding-0.6B" -v
+uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/download_model_standalone.py --storage-dir "$env:USERPROFILE\.claude_code_search" --model "Qwen/Qwen3-Embedding-0.6B" -v
 ```
 
 ## Storage Layout
@@ -471,8 +469,8 @@ Useful repo-local commands:
 - `python scripts/cli.py config reranker <on|off>` — toggle reranker
 
 If you installed with the one-liner and want to run these from anywhere, use
-`uv run --directory ~/.local/share/claude-context-local ...` on macOS/Linux/WSL
-or `uv run --directory "$env:LOCALAPPDATA\claude-context-local" ...` on
+`uv run --directory ~/.local/share/agent-context-code ...` on macOS/Linux/WSL
+or `uv run --directory "$env:LOCALAPPDATA\agent-context-code" ...` on
 PowerShell.
 
 ## Troubleshooting
@@ -539,4 +537,8 @@ The chunker currently supports 22 extensions across:
 ## Repository
 
 Canonical public repo:
-[tlines2016/claude-context-local](https://github.com/tlines2016/claude-context-local)
+[tlines2016/agent-context-code](https://github.com/tlines2016/agent-context-code)
+
+## Acknowledgements
+
+This project was originally inspired by and built upon the foundational concepts of claude-context-local by [Author Name]. It has since been heavily modified and expanded into a standalone tool to support agent-agnostic workflows, dedicated vector databases, reranking, and local embedding models.

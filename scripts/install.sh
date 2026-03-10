@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Remote installer for AGENT Context Local (compat name: claude-context-local)
+# Remote installer for AGENT Context Local
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/tlines2016/claude-context-local/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh | bash
 
-REPO_URL="https://github.com/tlines2016/claude-context-local"
-PROJECT_DIR="${HOME}/.local/share/claude-context-local"
+REPO_URL="https://github.com/tlines2016/agent-context-code"
+PROJECT_DIR="${HOME}/.local/share/agent-context-code"
 STORAGE_DIR="${CODE_SEARCH_STORAGE:-${HOME}/.claude_code_search}"
 MODEL_NAME="${CODE_SEARCH_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
 
@@ -39,7 +39,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 hr
-msg "Installing AGENT Context Local (compat: claude-context-local)"
+msg "Installing AGENT Context Local"
 hr
 
 if ! command -v git >/dev/null 2>&1; then

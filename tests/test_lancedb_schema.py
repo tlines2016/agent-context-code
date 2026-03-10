@@ -4,7 +4,7 @@ Why LanceDB?
     LanceDB is an embedded, serverless vector database — think "SQLite for
     vectors."  It stores everything on local disk (no external server, no
     username/password, no Docker container).  The connection string is simply a
-    filesystem path, which is managed internally by claude-context-local via
+    filesystem path, which is managed internally by agent-context-code via
     ``common_utils.get_storage_dir()``.  This keeps the "easy to install, 100%
     local" promise intact while giving us native vector search, row-level
     deletes for incremental re-indexing, and Apache Arrow / Pandas
@@ -330,7 +330,7 @@ class TestLanceDBLocalStorage:
     """Verify that LanceDB is truly embedded and serverless.
 
     These tests exist to confirm the "no credentials, no server" guarantee
-    that makes claude-context-local easy to install and use.
+    that makes agent-context-code easy to install and use.
 
     Storage philosophy
     ------------------

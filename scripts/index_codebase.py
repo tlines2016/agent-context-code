@@ -36,14 +36,14 @@ def main():
             "\n"
             "Supported languages: Python, JavaScript, TypeScript, Java, Kotlin, Go,\n"
             "Rust, C, C++, C#, Markdown, Svelte, YAML, TOML, and JSON (22 file extensions total).\n"
-            "Use .claude-context-local.json or CODE_SEARCH_EXCLUDE_EXTENSIONS to skip noisy file types.\n"
+            "Use .agent-context-code.json or CODE_SEARCH_EXCLUDE_EXTENSIONS to skip noisy file types.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",
         action="version",
-        version=f"claude-context-local {VERSION}",
+        version=f"agent-context-code {VERSION}",
     )
     parser.add_argument(
         "directory",

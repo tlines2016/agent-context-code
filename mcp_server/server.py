@@ -42,7 +42,7 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"claude-context-local {VERSION}",
+        version=f"agent-context-code {VERSION}",
     )
     parser.add_argument(
         "--transport",

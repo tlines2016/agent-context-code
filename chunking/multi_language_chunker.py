@@ -18,7 +18,7 @@ class MultiLanguageChunker:
     """Unified chunker supporting multiple programming languages."""
     # Supported extensions - derived from LANGUAGE_MAP
     SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys()) | set(STRUCTURED_DATA_EXTENSION_MAP.keys())
-    CONFIG_FILE_NAME = '.claude-context-local.json'
+    CONFIG_FILE_NAME = '.agent-context-code.json'
     DEFAULT_MAX_STRUCTURED_FILE_LINES = 50_000
     DEFAULT_MAX_STRUCTURED_FILE_BYTES = 5_000_000
     
