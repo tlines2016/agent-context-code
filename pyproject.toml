@@ -81,4 +81,4 @@ Documentation = "https://github.com/tlines2016/agent-context-code#readme"
 Issues = "https://github.com/tlines2016/agent-context-code/issues"
 
 [tool.setuptools.packages.find]
-include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*", "workspace*", "graph*"]
+include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*", "graph*"]

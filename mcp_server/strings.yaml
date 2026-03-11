@@ -30,14 +30,8 @@ tools:
 
   clear_index: Clear the search index, relational graph, and metadata for the current active project.
 
-  configure_workspace: |
-    Configure the processing mode for a project workspace. Files can be processed in "coding" mode (AST + relational graph + vector embeddings) or "writing" mode (text chunking + Merkle DAG + vector embeddings).
-    Minimal usage: configure_workspace("/path/to/project", default_mode="coding")
-    With overrides: configure_workspace("/path/to/project", extension_overrides={".proto": "coding", ".txt": "writing"})
-    Default behaviour: source code extensions use coding mode; documentation extensions use writing mode.
-
   get_graph_context: |
-    Retrieve structural relationships around a code chunk. Shows callers, callees, parent classes, and other connections from the relational graph.
+    Retrieve structural relationships around a code chunk. Shows callers, callees, parent classes, and other connections from the relational graph built during indexing.
     Usage: get_graph_context(chunk_id="abc123", max_depth=2)
     Cross-project: get_graph_context(chunk_id="abc123", project_path="/other/project")
 
@@ -45,14 +39,6 @@ help: |
   # Multi-project code search
 
   Each project is independently indexed and isolated.
-
-  ## Dual-mode processing
-
-  Files are automatically classified into **coding** or **writing** mode:
-  - **Coding** (source code): AST-aware chunking + relational graph + vector search
-  - **Writing** (documentation): Text chunking + Merkle DAG tracking + vector search
-
-  Configure modes via `configure_workspace()` or `.agent-context-code.json`.
 
   ## Workflow options
 

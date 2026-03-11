@@ -180,18 +180,22 @@ class TestGraphTraversal:
 
     def test_connected_subgraph(self, populated_graph):
         sg = populated_graph.get_connected_subgraph("cls_1", max_depth=1)
-        assert len(sg["symbols"]) >= 1
-        assert len(sg["edges"]) >= 1
+        # cls_1 has edges to init_1 and work_1 (contains), and
+        # work_1 has an incoming edge from helper_1 (calls).
+        # Depth 1 should include cls_1 + its direct neighbours.
+        assert len(sg["symbols"]) >= 3
+        assert len(sg["edges"]) >= 2
 
     def test_connected_subgraph_depth_zero(self, populated_graph):
         sg = populated_graph.get_connected_subgraph("helper_1", max_depth=0)
-        # Depth 0 — only the seed symbol.
-        assert len(sg["symbols"]) <= 1
+        # Depth 0 — only the seed symbol, no traversal.
+        assert len(sg["symbols"]) == 1
+        assert sg["symbols"][0]["chunk_id"] == "helper_1"
 
     def test_connected_subgraph_deep(self, populated_graph):
         sg = populated_graph.get_connected_subgraph("helper_1", max_depth=3)
         # Should reach all 4 symbols via helper→do_work→cls_1→__init__
-        assert len(sg["symbols"]) >= 2
+        assert len(sg["symbols"]) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -201,13 +205,18 @@ class TestGraphTraversal:
 class TestIndexFileChunks:
 
     def _make_chunk(self, name, chunk_type, file_path, start_line, parent_name=None):
-        """Minimal mock chunk with the attributes CodeGraph expects."""
+        """Minimal mock chunk with the attributes CodeGraph expects.
+        
+        Includes ``relative_path`` so ``_get_chunk_id`` can generate IDs
+        that match the ``CodeEmbedder._make_chunk_id`` scheme.
+        """
         class MockChunk:
             pass
         c = MockChunk()
         c.name = name
         c.chunk_type = chunk_type
         c.file_path = file_path
+        c.relative_path = file_path  # mirrors embedder behaviour
         c.start_line = start_line
         c.end_line = start_line + 10
         c.parent_name = parent_name

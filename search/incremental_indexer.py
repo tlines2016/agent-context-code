@@ -1,16 +1,10 @@
 """Incremental indexing using Merkle tree change detection.
 
-Supports a dual-mode pipeline:
-
-- **coding** mode — AST-aware chunking via tree-sitter, relational graph
-  population (``CodeGraph``), and LanceDB vector embeddings.
-- **writing** mode — Merkle DAG change tracking with text-oriented chunking
-  and vector embeddings (no graph).
-
-Files are routed through the correct pipeline by ``ModeRouter`` based on
-the workspace configuration.  When no ``ModeRouter`` is provided, all
-files fall through to the existing single-mode pipeline for backward
-compatibility.
+Integrates a SQLite relational graph (``CodeGraph``) alongside the LanceDB
+vector index.  When a ``code_graph`` is provided, parsed chunks are fed
+into the graph so that structural relationships (class hierarchies,
+function containment, cross-file inheritance) are available for
+graph-enriched search results.
 """
 
 import logging
@@ -41,8 +35,6 @@ class IncrementalIndexResult:
     time_taken: float
     success: bool
     error: Optional[str] = None
-    # Dual-mode routing stats (populated when ModeRouter is active).
-    routing_stats: Dict = field(default_factory=dict)
     graph_stats: Dict = field(default_factory=dict)
     
     def to_dict(self) -> Dict:
@@ -57,8 +49,6 @@ class IncrementalIndexResult:
             'success': self.success,
             'error': self.error,
         }
-        if self.routing_stats:
-            result['routing_stats'] = self.routing_stats
         if self.graph_stats:
             result['graph_stats'] = self.graph_stats
         return result
@@ -67,11 +57,10 @@ class IncrementalIndexResult:
 class IncrementalIndexer:
     """Handles incremental indexing of code changes.
     
-    Supports an optional ``ModeRouter`` for dual-mode processing.  When a
-    mode router is provided, files are classified as *coding* or *writing*
-    and processed through the appropriate pipeline.  When no router is
-    provided the behaviour is identical to the original single-mode pipeline
-    (backward compatible).
+    When a ``code_graph`` is provided, parsed chunks are also fed into the
+    SQLite relational graph for structural relationship tracking.  The
+    graph is optional — when *None*, behaviour is identical to the original
+    vector-only pipeline.
     """
     
     def __init__(
@@ -80,7 +69,6 @@ class IncrementalIndexer:
         embedder: Optional[CodeEmbedder] = None,
         chunker: Optional[MultiLanguageChunker] = None,
         snapshot_manager: Optional[SnapshotManager] = None,
-        mode_router=None,
         code_graph=None,
     ):
         """Initialize incremental indexer.
@@ -90,19 +78,14 @@ class IncrementalIndexer:
             embedder: Embedder instance
             chunker: Code chunker instance
             snapshot_manager: Snapshot manager instance
-            mode_router: Optional ModeRouter for dual-mode processing.
-                         When provided, files are routed to coding or
-                         writing pipelines based on workspace config.
-            code_graph: Optional CodeGraph instance for relationship
-                        tracking in coding mode.
+            code_graph: Optional CodeGraph instance for structural
+                        relationship tracking alongside vector embeddings.
         """
         self.indexer = indexer or Indexer()
         self.embedder = embedder or CodeEmbedder()
         self.chunker = chunker or MultiLanguageChunker()
         self.snapshot_manager = snapshot_manager or SnapshotManager()
         self.change_detector = ChangeDetector(self.snapshot_manager)
-        # Dual-mode support (optional — None preserves legacy behaviour).
-        self.mode_router = mode_router
         self.code_graph = code_graph
     
     def detect_changes(self, project_path: str) -> Tuple[FileChanges, MerkleDAG]:
@@ -230,15 +213,10 @@ class IncrementalIndexer:
     ) -> IncrementalIndexResult:
         """Perform full indexing of a project.
         
-        When a ``mode_router`` is available, files are routed through the
-        dual-mode pipeline (coding vs writing).  Otherwise the legacy
-        single-pipeline path is used.
-        
         Args:
             project_path: Path to project
             project_name: Project name
             start_time: Start time for timing
-            indexing_config: Optional indexing configuration for cache invalidation
             
         Returns:
             IncrementalIndexResult
@@ -260,30 +238,22 @@ class IncrementalIndexer:
             # Filter supported files
             supported_files = [f for f in all_files if self.chunker.is_supported(f)]
             
-            # ── Chunk files ──────────────────────────────────────────────
-            # If a mode router is active, use it to route each file through
-            # the correct pipeline (coding → AST+graph, writing → text).
-            # Otherwise fall back to the original direct-chunker path.
+            # Collect all chunks first, then embed in a single pass for efficiency
             all_chunks = []
-            if self.mode_router is not None:
-                self.mode_router.reset_stats()
-                for file_path in supported_files:
-                    full_path = str(Path(project_path) / file_path)
-                    try:
-                        chunks = self.mode_router.route_file(full_path)
-                        if chunks:
-                            all_chunks.extend(chunks)
-                    except Exception as e:
-                        logger.warning(f"Failed to chunk {file_path}: {e}")
-            else:
-                for file_path in supported_files:
-                    full_path = Path(project_path) / file_path
-                    try:
-                        chunks = self.chunker.chunk_file(str(full_path))
-                        if chunks:
-                            all_chunks.extend(chunks)
-                    except Exception as e:
-                        logger.warning(f"Failed to chunk {file_path}: {e}")
+            for file_path in supported_files:
+                full_path = str(Path(project_path) / file_path)
+                try:
+                    chunks = self.chunker.chunk_file(full_path)
+                    if chunks:
+                        all_chunks.extend(chunks)
+                        # Populate the relational graph when available.
+                        if self.code_graph is not None:
+                            try:
+                                self.code_graph.index_file_chunks(full_path, chunks)
+                            except Exception as exc:
+                                logger.warning("Graph indexing failed for %s: %s", file_path, exc)
+                except Exception as e:
+                    logger.warning(f"Failed to chunk {file_path}: {e}")
 
             # Embed all chunks in one batched call
             all_embedding_results = []
@@ -328,12 +298,6 @@ class IncrementalIndexer:
             # Compact fragments and clean up old versions.
             self.indexer.optimize()
 
-            # Collect routing and graph stats for the result.
-            routing_stats = (
-                self.mode_router.get_routing_stats()
-                if self.mode_router is not None
-                else {}
-            )
             graph_stats = (
                 self.code_graph.get_stats()
                 if self.code_graph is not None
@@ -348,7 +312,6 @@ class IncrementalIndexer:
                 chunks_removed=0,
                 time_taken=time.time() - start_time,
                 success=True,
-                routing_stats=routing_stats,
                 graph_stats=graph_stats,
             )
             
@@ -387,11 +350,14 @@ class IncrementalIndexer:
             logger.debug(f"Removed {removed} chunks from {file_path}")
 
             # Remove from relational graph when available.
+            # Use the resolved absolute path to match the path form used
+            # during indexing (index_file_chunks receives full_path).
             if self.code_graph is not None:
+                abs_path = str(Path(file_path).resolve())
                 try:
-                    self.code_graph.remove_file(file_path)
+                    self.code_graph.remove_file(abs_path)
                 except Exception as exc:
-                    logger.warning("Graph removal failed for %s: %s", file_path, exc)
+                    logger.warning("Graph removal failed for %s: %s", abs_path, exc)
         
         return chunks_removed
     
@@ -403,8 +369,7 @@ class IncrementalIndexer:
     ) -> int:
         """Add chunks for new and modified files.
         
-        Uses the ``mode_router`` when available to route files through the
-        dual-mode pipeline; otherwise falls back to direct chunking.
+        Also populates the relational graph when a ``code_graph`` is available.
         
         Args:
             changes: File changes
@@ -419,17 +384,20 @@ class IncrementalIndexer:
         # Filter supported files
         supported_files = [f for f in files_to_index if self.chunker.is_supported(f)]
         
-        # Collect all chunks, routing through the correct pipeline.
+        # Collect all chunks first, then embed in a single pass
         chunks_to_embed = []
         for file_path in supported_files:
             full_path = str(Path(project_path) / file_path)
             try:
-                if self.mode_router is not None:
-                    chunks = self.mode_router.route_file(full_path)
-                else:
-                    chunks = self.chunker.chunk_file(full_path)
+                chunks = self.chunker.chunk_file(full_path)
                 if chunks:
                     chunks_to_embed.extend(chunks)
+                    # Populate the relational graph when available.
+                    if self.code_graph is not None:
+                        try:
+                            self.code_graph.index_file_chunks(full_path, chunks)
+                        except Exception as exc:
+                            logger.warning("Graph indexing failed for %s: %s", file_path, exc)
             except Exception as e:
                 logger.warning(f"Failed to chunk {file_path}: {e}")
 

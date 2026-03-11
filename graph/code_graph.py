@@ -156,8 +156,8 @@ class CodeGraph:
         Called during incremental re-indexing when a file is modified or
         deleted.  Returns the number of symbols removed.
 
-        Edges are cascade-deleted via the foreign key constraint — any edge
-        whose source **or** target belonged to *file_path* is removed.
+        Any edge whose source **or** target belonged to *file_path* is
+        explicitly deleted before removing the corresponding symbols.
         """
         conn = self._get_conn()
         # Gather chunk_ids for the file so we can delete edges referencing them
@@ -328,7 +328,8 @@ class CodeGraph:
         frontier = {chunk_id}
         all_edges: List[Dict[str, Any]] = []
 
-        for _ in range(max_depth):
+        # depth 0 = seed only; depth 1 = seed + direct neighbours; etc.
+        for _ in range(max_depth + 1):
             if not frontier:
                 break
             next_frontier: set = set()
@@ -362,7 +363,7 @@ class CodeGraph:
 
         return {"symbols": symbols, "edges": unique_edges}
 
-    # ── Index helper (called by ModeRouter) ──────────────────────────────
+    # ── Index helper ────────────────────────────────────────────────────
 
     def index_file_chunks(
         self,
@@ -371,7 +372,7 @@ class CodeGraph:
     ) -> None:
         """Extract symbols and intra-file relationships from parsed chunks.
 
-        This is the primary entry point used by ``ModeRouter._process_coding``
+        This is the primary entry point called by the indexing pipeline
         after tree-sitter has chunked a file.  It:
 
         1. Removes any stale symbols for *file_path*.
@@ -432,10 +433,13 @@ class CodeGraph:
         - ``parent_name`` → ``inherits`` edge to a class with that name.
         - (Future) import statements → ``imports`` edges.
 
-        Returns the number of new edges created.
+        Returns the number of new edges actually created (duplicates excluded).
         """
         conn = self._get_conn()
-        new_edges = 0
+
+        # Snapshot the current edge count so we can compute the true delta
+        # after INSERT OR IGNORE (which silently skips duplicates).
+        before_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
         # Inheritance: symbol with parent_name → class with that name
         # in a *different* file.
@@ -459,10 +463,11 @@ class CodeGraph:
                 target_chunk_id=row["parent_id"],
                 edge_type=EDGE_INHERITS,
             )
-            new_edges += 1
 
         self.commit()
-        return new_edges
+
+        after_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        return after_count - before_count
 
     # ── Statistics ───────────────────────────────────────────────────────
 
@@ -506,27 +511,26 @@ class CodeGraph:
 
 
 def _get_chunk_id(chunk) -> Optional[str]:
-    """Extract a stable chunk_id from a CodeChunk.
+    """Build a chunk_id from a CodeChunk that matches ``CodeEmbedder._make_chunk_id``.
 
-    CodeChunk doesn't natively carry a chunk_id — the embedder generates one.
-    We synthesise a deterministic ID from (file_path, name, start_line) so
-    that the graph can reference the same IDs before embedding occurs.
-
-    This mirrors the ID scheme used by ``CodeEmbedder.embed_chunk`` (which
-    hashes the chunk content).  For graph purposes the exact scheme doesn't
-    matter as long as it's deterministic per-chunk.
+    The embedder builds IDs as ``relative_path:start-end:chunk_type[:name]``.
+    We replicate that scheme here so graph symbols use the same IDs that
+    end up in LanceDB, enabling O(1) joins between vector results and
+    the relational graph.
     """
-    name = getattr(chunk, "name", None) or ""
-    file_path = getattr(chunk, "file_path", "") or ""
+    relative_path = getattr(chunk, "relative_path", "") or ""
     start_line = getattr(chunk, "start_line", 0)
+    end_line = getattr(chunk, "end_line", 0)
     chunk_type = getattr(chunk, "chunk_type", "")
+    name = getattr(chunk, "name", None) or ""
 
-    if not file_path:
+    if not relative_path:
         return None
 
-    import hashlib
-    raw = f"{file_path}:{chunk_type}:{name}:{start_line}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    chunk_id = f"{relative_path}:{start_line}-{end_line}:{chunk_type}"
+    if name:
+        chunk_id += f":{name}"
+    return chunk_id
 
 
 # ── SQL Schema ───────────────────────────────────────────────────────────
