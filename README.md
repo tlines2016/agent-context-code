@@ -47,10 +47,12 @@ things up by meaning, not just by filename or string match.
 | Component | Details |
 |-----------|---------|
 | **Vector database** | LanceDB (embedded, serverless — like SQLite for vectors) |
+| **Relational graph** | SQLite (structural relationships: class hierarchies, call graphs, imports) |
 | **Search** | Hybrid (BM25 keyword + vector similarity), automatically enabled |
 | **Storage** | `~/.claude_code_search` (or `CODE_SEARCH_STORAGE` env var) |
 | **Per-project index** | `~/.claude_code_search/projects/{name}_{hash}` |
 | **Chunking** | Python AST, tree-sitter, and structured config parsing |
+| **Change detection** | Merkle DAG (content hashes — only changed files are re-indexed) |
 | **Default embedding model** | `Qwen/Qwen3-Embedding-0.6B` (non-gated, runs on CPU or GPU) |
 | **Default reranker** | `cross-encoder/ms-marco-MiniLM-L-6-v2` (22.7M, opt-in) |
 | **Primary client** | Claude Code via MCP |
@@ -101,27 +103,33 @@ AGENT Context Local bridges that gap with **hybrid search** — combining keywor
 matching with semantic understanding:
 
 1. **Chunk** — your source files are split into meaningful pieces (functions,
-   classes, config blocks) using language-aware parsers, not arbitrary line counts.
-2. **Embed** — each chunk is passed through a local embedding model that converts
+   classes, config blocks) using language-aware parsers (tree-sitter AST), not
+   arbitrary line counts.
+2. **Graph** — structural relationships extracted from the AST chunks (class
+   hierarchies, method containment, cross-file inheritance) are stored in a
+   SQLite relational graph. This lets you navigate from a search result to its
+   callers, parent classes, or imported modules via `get_graph_context`.
+3. **Embed** — each chunk is passed through a local embedding model that converts
    the code into a high-dimensional vector capturing its semantic meaning.
-3. **Index** — the vectors are stored in a LanceDB table alongside the original
+4. **Index** — the vectors are stored in a LanceDB table alongside the original
    code and metadata (file path, line numbers, chunk type, etc.). A full-text
    search (FTS) index is also built for BM25 keyword matching.
-4. **Search** — when you ask a question, two searches run in parallel:
+5. **Search** — when you ask a question, two searches run in parallel:
    - **BM25 keyword search** finds chunks containing your exact terms
    - **Vector similarity search** finds chunks with related *meaning*
    - Results are combined via **Reciprocal Rank Fusion (RRF)** for the best of both
-5. **Rerank** (optional) — a lightweight cross-encoder re-scores the top
+6. **Rerank** (optional) — a lightweight cross-encoder re-scores the top
    candidates for even more precise ranking.
 
 This hybrid approach significantly improves retrieval quality over vector-only search.
 The embedding model runs locally (no API calls), and LanceDB writes directly to
 disk with no server process, so the whole pipeline has minimal overhead.
 
-The index is also **incremental**: a Merkle tree tracks file changes between runs,
-so re-indexing only processes files that actually changed. Combined with automatic
-**compaction** (which cleans up old versions and deleted data), the index stays
-lean over time without any manual maintenance.
+The index is also **incremental**: a Merkle DAG (directed acyclic graph of file
+content hashes) tracks exactly which files changed between runs, so re-indexing
+only processes files that actually changed. Combined with automatic **compaction**
+(which cleans up old versions and deleted data), the index stays lean over time
+without any manual maintenance.
 
 ## Quick Start
 
@@ -345,7 +353,20 @@ There are two ways to interact with AGENT Context Local:
 
 - **MCP tools** — used inside Claude Code sessions for indexing and searching.
   These are available automatically after MCP registration.
-  Examples: `index_directory`, `search_code`, `get_index_status`
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `index_directory("/path")` | Index a project (incremental by default) |
+| `search_code("query")` | Hybrid semantic + keyword search |
+| `find_similar_code(chunk_id)` | Find code similar to a known chunk |
+| `get_graph_context(chunk_id)` | Navigate structural relationships (callers, parent classes, etc.) |
+| `get_index_status` | Index statistics, model info, graph stats |
+| `list_projects` | List all indexed projects |
+| `switch_project("/path")` | Change the active project |
+| `clear_index` | Clear the vector index and relational graph |
+| `index_test_project` | Index the built-in sample project |
 
 ## Recommended: Add to Your Project
 
@@ -363,6 +384,10 @@ When exploring the codebase or looking for code by meaning, use the
 - "search for authentication logic"
 - "find error handling patterns"
 - "where is the database connection configured?"
+
+To explore how a specific function connects to the rest of the codebase
+(callers, parent classes, imports), use `get_graph_context(chunk_id)` with
+a chunk_id from a `search_code` result.
 
 If the index seems stale, run `index_directory` to refresh it.
 Use `get_index_status` to check index health and model info.
@@ -403,9 +428,10 @@ uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/downloa
         ├── project_info.json
         ├── index/
         │   ├── lancedb/
-        │   │   └── code_chunks.lance/
+        │   │   └── code_chunks.lance/   # vector + FTS index
+        │   ├── code_graph.db            # SQLite relational graph
         │   └── stats.json
-        └── snapshots/
+        └── snapshots/                   # Merkle DAG snapshots for change detection
 ```
 
 Your project workspace stays clean — all database files live in this central
@@ -421,8 +447,11 @@ You shouldn't need to think about this, but it's here if you're curious.
 Each time you add, modify, or delete files, LanceDB creates new internal
 fragments and version snapshots. The indexer automatically compacts these
 after each session — cleaning up old versions (keeping one day of history)
-and reclaiming disk space. If you ever want to check how things look, run
-`get_index_status` to see the current storage size and version count.
+and reclaiming disk space. The SQLite relational graph (`code_graph.db`) is
+also kept in sync: modified or deleted files have their symbols and edges
+removed before the updated chunks are re-inserted. If you ever want to check
+how things look, run `get_index_status` to see the current storage size,
+version count, and graph statistics.
 
 ## Optional: Two-Stage Reranker
 

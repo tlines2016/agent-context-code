@@ -160,7 +160,7 @@ class IncrementalIndexer:
             )
             
             # Process changes
-            chunks_removed = self._remove_old_chunks(changes, project_name)
+            chunks_removed = self._remove_old_chunks(changes, project_name, project_path)
             chunks_added = self._add_new_chunks(changes, project_path, project_name)
             
             # Update snapshot
@@ -328,7 +328,12 @@ class IncrementalIndexer:
                 error=str(e)
             )
     
-    def _remove_old_chunks(self, changes: FileChanges, project_name: str) -> int:
+    def _remove_old_chunks(
+        self,
+        changes: FileChanges,
+        project_name: str,
+        project_path: str,
+    ) -> int:
         """Remove chunks for deleted and modified files.
         
         Also removes symbols/edges from the code graph when present.
@@ -336,6 +341,8 @@ class IncrementalIndexer:
         Args:
             changes: File changes
             project_name: Project name
+            project_path: Project root path, used to reconstruct the absolute
+                          path form that was stored during indexing.
             
         Returns:
             Number of chunks removed
@@ -350,14 +357,14 @@ class IncrementalIndexer:
             logger.debug(f"Removed {removed} chunks from {file_path}")
 
             # Remove from relational graph when available.
-            # Use the resolved absolute path to match the path form used
-            # during indexing (index_file_chunks receives full_path).
+            # Construct the same absolute path form used during indexing:
+            # index_file_chunks is called with str(Path(project_path) / file_path).
             if self.code_graph is not None:
-                abs_path = str(Path(file_path).resolve())
+                graph_file_path = str(Path(project_path) / file_path)
                 try:
-                    self.code_graph.remove_file(abs_path)
+                    self.code_graph.remove_file(graph_file_path)
                 except Exception as exc:
-                    logger.warning("Graph removal failed for %s: %s", abs_path, exc)
+                    logger.warning("Graph removal failed for %s: %s", graph_file_path, exc)
         
         return chunks_removed
     
