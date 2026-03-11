@@ -108,7 +108,7 @@ class TestRerankerDeviceResolution:
         import torch as real_torch
         from reranking.reranker import CodeReranker
 
-        reranker = CodeReranker(device="auto")
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="auto")
 
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
@@ -145,7 +145,7 @@ class TestRerankerDeviceResolution:
         import torch
         from reranking.reranker import CodeReranker
 
-        reranker = CodeReranker(device="auto")
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="auto")
 
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
@@ -167,7 +167,7 @@ class TestRerankerDeviceResolution:
         import torch
         from reranking.reranker import CodeReranker
 
-        reranker = CodeReranker(device="auto")
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="auto")
 
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
@@ -189,7 +189,7 @@ class TestRerankerDeviceResolution:
         import torch
         from reranking.reranker import CodeReranker
 
-        reranker = CodeReranker(device="auto")
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="auto")
 
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
@@ -211,7 +211,7 @@ class TestRerankerDeviceResolution:
         import torch
         from reranking.reranker import CodeReranker
 
-        reranker = CodeReranker(device="auto")
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="auto")
 
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model
@@ -236,7 +236,7 @@ class TestRerankerDeviceResolution:
         import torch
         from reranking.reranker import CodeReranker
 
-        reranker = CodeReranker(device="auto")
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="auto")
 
         mock_model = MagicMock()
         mock_model.to.return_value = mock_model

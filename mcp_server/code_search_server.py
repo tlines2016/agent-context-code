@@ -109,7 +109,7 @@ class CodeSearchServer:
             logger.info("Reranker not enabled")
             return None
 
-        model_name = config.get("model_name", "Qwen/Qwen3-Reranker-4B")
+        model_name = config.get("model_name", "cross-encoder/ms-marco-MiniLM-L-6-v2")
         try:
             from reranking.reranker import CodeReranker
 

@@ -42,11 +42,12 @@ claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA
 
 ## Key Paths and Components
 
-- `search/indexer.py`: LanceDB index manager (compaction, scalar indexes, health stats)
-- `search/searcher.py`: retrieval and ranking
+- `search/indexer.py`: LanceDB index manager (compaction, scalar indexes, FTS index, hybrid search)
+- `search/searcher.py`: retrieval and ranking (passes query text for hybrid search)
 - `search/incremental_indexer.py`: Merkle-driven incremental flow (calls `optimize()` after indexing)
 - `mcp_server/code_search_server.py`: indexing/search business logic
 - `scripts/install.sh`, `scripts/install.ps1`: installer/update workflows
+- `scripts/uninstall.sh`, `scripts/uninstall.ps1`: safe uninstall with path guards
 - `scripts/download_model_standalone.py`: model bootstrap
 - `common_utils.py`: storage/config helpers
 
@@ -64,11 +65,15 @@ Never move index database files into the target workspace.
 LanceDB tables are automatically compacted after each indexing session
 (`optimize()` with 1-day version retention). Scalar indexes (BTREE on
 `relative_path`/`chunk_id`, BITMAP on `chunk_type`) accelerate filtered queries.
+A full-text search (FTS) index on the `text` column enables BM25 keyword
+matching for hybrid search (rebuilt during `optimize()`).
 
 ## Model Notes
 
-- Default model: `Qwen/Qwen3-Embedding-0.6B`
-- Optional models live in `embeddings/model_catalog.py`
+- Default embedding model: `Qwen/Qwen3-Embedding-0.6B`
+- Default reranker (when enabled): `cross-encoder/ms-marco-MiniLM-L-6-v2`
+- Embedding catalog: `embeddings/model_catalog.py`
+- Reranker catalog: `reranking/reranker_catalog.py`
 - Install-time selection: `CODE_SEARCH_MODEL`
 - Persisted selection: `install_config.json`
 

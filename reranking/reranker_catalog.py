@@ -22,20 +22,60 @@ class RerankerModelConfig:
     recommended_for: str = ""
     vram_requirement_gb: float = 8.0
     cpu_feasible: bool = True
+    # Architecture type determines how the model is loaded and scored:
+    # - "cross_encoder": sentence-transformers CrossEncoder (predict() returns scores)
+    # - "causal_lm": Qwen-style yes/no token classification via AutoModelForCausalLM
+    architecture: str = "causal_lm"
 
 
 RERANKER_CATALOG = {
+    "cross-encoder/ms-marco-MiniLM-L-6-v2": RerankerModelConfig(
+        model_name="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        short_name="minilm-reranker",
+        instruction="",  # CrossEncoder handles this internally
+        max_length=512,
+        description="MiniLM-L-6 cross-encoder — tiny (22.7M), fast, NDCG@10 74.30. Best CPU default.",
+        recommended_for="Default reranker. Fast enough for CPU, negligible overhead.",
+        vram_requirement_gb=0.1,
+        cpu_feasible=True,
+        architecture="cross_encoder",
+    ),
+    "Qwen/Qwen3-Reranker-0.6B": RerankerModelConfig(
+        model_name="Qwen/Qwen3-Reranker-0.6B",
+        short_name="qwen-reranker-0.6b",
+        instruction=RERANKER_INSTRUCTION,
+        max_length=32768,
+        description="Qwen3-Reranker-0.6B causal LM — MTEB-Code 73.42, pairs with Qwen3 embedder.",
+        recommended_for="GPU mid-tier reranking with long-context support (32K tokens).",
+        vram_requirement_gb=2.0,
+        cpu_feasible=False,
+        architecture="causal_lm",
+    ),
+    "BAAI/bge-reranker-v2-m3": RerankerModelConfig(
+        model_name="BAAI/bge-reranker-v2-m3",
+        short_name="bge-reranker-m3",
+        instruction="",  # Uses AutoModelForSequenceClassification
+        max_length=8194,
+        description="BGE-Reranker-v2-m3 — multilingual cross-encoder (~600M).",
+        recommended_for="Multilingual codebases. GPU recommended.",
+        vram_requirement_gb=2.0,
+        cpu_feasible=False,
+        architecture="cross_encoder",
+    ),
     "Qwen/Qwen3-Reranker-4B": RerankerModelConfig(
         model_name="Qwen/Qwen3-Reranker-4B",
         short_name="qwen-reranker-4b",
         instruction=RERANKER_INSTRUCTION,
         max_length=8192,
-        description="Qwen3-Reranker-4B causal LM for two-stage code search reranking.",
-        recommended_for="High-precision reranking on GPU; feasible on CPU with higher latency.",
-        vram_requirement_gb=8.0,
-        cpu_feasible=True,
+        description="Qwen3-Reranker-4B causal LM — highest quality, GPU required.",
+        recommended_for="High-precision reranking on GPU (10 GB+ VRAM).",
+        vram_requirement_gb=10.0,
+        cpu_feasible=False,
+        architecture="causal_lm",
     ),
 }
+
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # Short-name reverse lookup: maps e.g. "qwen-reranker-4b" → "Qwen/Qwen3-Reranker-4B"
 RERANKER_SHORT_NAMES = {

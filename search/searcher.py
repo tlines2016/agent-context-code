@@ -132,7 +132,8 @@ class IntelligentSearcher:
         raw_results = self.index_manager.search(
             query_embedding,
             fetch_k,
-            filters
+            filters,
+            query_text=optimized_query,
         )
         self._logger.info(f"Index manager returned {len(raw_results)} raw results")
 

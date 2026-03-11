@@ -24,7 +24,7 @@ class _StubIndexManager:
     def __init__(self):
         self.calls = []
 
-    def search(self, query_embedding, k, filters=None):
+    def search(self, query_embedding, k, filters=None, query_text=None):
         self.calls.append({"k": k, "filters": filters})
         return []
 
