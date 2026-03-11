@@ -1,6 +1,5 @@
 """Unit tests for graph/code_graph.CodeGraph."""
 
-import json
 import sys
 from pathlib import Path
 
