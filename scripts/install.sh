@@ -167,7 +167,7 @@ fi
 PROFILE="${CODE_SEARCH_PROFILE:-base}"
 RERANKER_STATUS="skipped"
 if [[ "$PROFILE" == "reranker" || "$PROFILE" == "full" ]]; then
-  RERANKER_NAME="${CODE_SEARCH_RERANKER:-Qwen/Qwen3-Reranker-4B}"
+  RERANKER_NAME="${CODE_SEARCH_RERANKER:-cross-encoder/ms-marco-MiniLM-L-6-v2}"
   msg "Downloading reranker model: ${RERANKER_NAME}"
   if (cd "${PROJECT_DIR}" && uv run scripts/download_reranker_standalone.py --storage-dir "${STORAGE_DIR}" --model "${RERANKER_NAME}" -v); then
     RERANKER_STATUS="ok"
@@ -228,6 +228,7 @@ printf "%s\n" "• Selected embedding model: ${MODEL_NAME}"
 printf "%s\n" "• Model preference file: ${STORAGE_DIR}/install_config.json"
 printf "%s\n" "• To change models: set CODE_SEARCH_MODEL and re-run installer"
 printf "%s\n" "• Run diagnostics: uv run --directory ${PROJECT_DIR} python scripts/cli.py doctor"
+printf "%s\n" "• To uninstall: curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/uninstall.sh | bash"
 
 if [[ "${IS_WSL}" -eq 1 ]]; then
   printf "\n${YELLOW}${BOLD}🐧 WSL2 detected${NC}\n"

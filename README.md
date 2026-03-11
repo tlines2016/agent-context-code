@@ -48,11 +48,48 @@ things up by meaning, not just by filename or string match.
 | Component | Details |
 |-----------|---------|
 | **Vector database** | LanceDB (embedded, serverless — like SQLite for vectors) |
+| **Search** | Hybrid (BM25 keyword + vector similarity), automatically enabled |
 | **Storage** | `~/.claude_code_search` (or `CODE_SEARCH_STORAGE` env var) |
 | **Per-project index** | `~/.claude_code_search/projects/{name}_{hash}` |
 | **Chunking** | Python AST, tree-sitter, and structured config parsing |
-| **Default model** | `Qwen/Qwen3-Embedding-0.6B` (non-gated, runs on CPU or GPU) |
+| **Default embedding model** | `Qwen/Qwen3-Embedding-0.6B` (non-gated, runs on CPU or GPU) |
+| **Default reranker** | `cross-encoder/ms-marco-MiniLM-L-6-v2` (22.7M, opt-in) |
 | **Primary client** | Claude Code via MCP |
+
+## System Requirements
+
+The default setup is designed to run on any modern laptop or desktop — no GPU
+required. If you have a GPU, larger models are available for higher quality.
+
+### Minimum (CPU-only, default install)
+
+| Resource | Requirement |
+|----------|-------------|
+| **CPU** | Any x86_64 or ARM64 (Apple Silicon, etc.) |
+| **RAM** | 4 GB free (embedding model uses ~1.2 GB) |
+| **Disk** | ~2 GB free (model files + index storage) |
+| **GPU** | Not required |
+| **Python** | 3.12+ |
+| **OS** | Windows 10+, macOS 12+, Linux (glibc 2.31+) |
+
+### Recommended configurations
+
+| Setup | Embedding Model | Reranker (optional) | RAM / VRAM | Quality |
+|-------|----------------|---------------------|------------|---------|
+| **Default** | Qwen3-Embedding-0.6B (1024-d) | — | ~1.2 GB RAM | Good — runs on any modern PC |
+| **Default + reranker** | Qwen3-Embedding-0.6B (1024-d) | MiniLM-L-6-v2 (22.7M) | ~1.5 GB RAM | Better — adds precision for ~90 MB extra |
+| **GPU starter** | Qwen3-Embedding-0.6B (1024-d) | Qwen3-Reranker-0.6B | ~4 GB VRAM | High — Qwen 0.6B pair, great entry GPU setup |
+| **GPU mid-tier** | Qwen3-Embedding-4B (2560-d) | Qwen3-Reranker-0.6B | ~10 GB VRAM | Higher — bigger embeddings, same fast reranker |
+| **GPU high-end** | Qwen3-Embedding-8B (4096-d) | Qwen3-Reranker-4B | ~28 GB VRAM | Maximum — top MTEB scores |
+
+The **Default** setup works out of the box on any modern PC — no GPU needed, no
+extra configuration. Hybrid search (BM25 keyword matching + vector similarity) is
+always enabled automatically.
+
+**Reranking is optional** and adds a second-pass quality boost. Enable it anytime
+with `python scripts/cli.py config reranker on`. You can choose any reranker model
+independently from your embedding model — see
+[Optional: Two-Stage Reranker](#optional-two-stage-reranker) for the full list.
 
 ## How It Works
 
@@ -61,20 +98,24 @@ works when you know the variable name or error message, but falls short when
 you're looking for *concepts* — "where does the app handle retries?" won't match
 `except ConnectionError: time.sleep(backoff)`.
 
-AGENT Context Local bridges that gap with **vector search**:
+AGENT Context Local bridges that gap with **hybrid search** — combining keyword
+matching with semantic understanding:
 
 1. **Chunk** — your source files are split into meaningful pieces (functions,
    classes, config blocks) using language-aware parsers, not arbitrary line counts.
 2. **Embed** — each chunk is passed through a local embedding model that converts
    the code into a high-dimensional vector capturing its semantic meaning.
 3. **Index** — the vectors are stored in a LanceDB table alongside the original
-   code and metadata (file path, line numbers, chunk type, etc.).
-4. **Search** — when you ask a question, the query is embedded the same way and
-   compared against all stored vectors using cosine similarity. The closest
-   matches are the most semantically relevant chunks.
+   code and metadata (file path, line numbers, chunk type, etc.). A full-text
+   search (FTS) index is also built for BM25 keyword matching.
+4. **Search** — when you ask a question, two searches run in parallel:
+   - **BM25 keyword search** finds chunks containing your exact terms
+   - **Vector similarity search** finds chunks with related *meaning*
+   - Results are combined via **Reciprocal Rank Fusion (RRF)** for the best of both
+5. **Rerank** (optional) — a lightweight cross-encoder re-scores the top
+   candidates for even more precise ranking.
 
-This approach is efficient because vector similarity comparison is a simple math
-operation — even brute-force search over 50,000 chunks completes in under 20ms.
+This hybrid approach significantly improves retrieval quality over vector-only search.
 The embedding model runs locally (no API calls), and LanceDB writes directly to
 disk with no server process, so the whole pipeline has minimal overhead.
 
@@ -238,7 +279,7 @@ Other options:
 
 - `Qwen/Qwen3-Embedding-0.6B`: default, non-gated, CPU-friendly
 - `unsloth/Qwen3-Embedding-4B`: higher quality, needs GPU with ~8 GB VRAM
-- `unsloth/Qwen3-Embedding-8B`: top MTEB multilingual quality, needs GPU with 24 GB+ VRAM
+- `unsloth/Qwen3-Embedding-8B`: top MTEB multilingual quality, needs GPU with ~18 GB VRAM
 - `google/embeddinggemma-300m`: legacy default (gated — requires HF auth, see [Advanced: Using Gated Models](#advanced-using-gated-models))
 - `Salesforce/SFR-Embedding-Code-400M_R`: code-search-focused alternative
 
@@ -388,17 +429,26 @@ and reclaiming disk space. If you ever want to check how things look, run
 
 If you want even more precise results, you can turn on a second-pass reranker.
 It works like this: vector search first pulls back a broad set of candidates,
-then the Qwen3-Reranker-4B model reads each candidate against your query and
-re-scores them for relevance.
+then a reranker model reads each candidate against your query and re-scores
+them for relevance.
 
-1. **Recall** — vector search returns the top 50 candidates
-2. **Rerank** — Qwen3-Reranker-4B reads each (query, passage) pair and re-scores
+1. **Recall** — vector/hybrid search returns the top 50 candidates
+2. **Rerank** — the reranker reads each (query, passage) pair and re-scores
 3. **Return** — the best results after reranking
+
+### Available reranker models
+
+| Model | Size | Best for | Requirements |
+|-------|------|----------|-------------|
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` | 22.7M | **Default** — fast CPU reranking | ~90 MB RAM, ~200ms for 50 passages |
+| `Qwen/Qwen3-Reranker-0.6B` | 0.6B | GPU mid-tier, 32K context | ~2 GB VRAM |
+| `BAAI/bge-reranker-v2-m3` | ~600M | Multilingual codebases | ~2 GB VRAM |
+| `Qwen/Qwen3-Reranker-4B` | 4B | Maximum quality | ~10 GB VRAM |
 
 ### Install the reranker model
 
 ```bash
-python scripts/cli.py models install qwen-reranker-4b
+python scripts/cli.py models install minilm-reranker
 ```
 
 Or during initial install, set the profile:
@@ -417,8 +467,8 @@ python scripts/cli.py config reranker off
 
 ### Requirements
 
-- About 8 GB VRAM on GPU, or CPU with higher latency (30-60s for 50 passages)
-- Running both the 4B embedding model and 4B reranker together needs roughly 16 GB VRAM
+- The default reranker (`ms-marco-MiniLM-L-6-v2`) runs on CPU with negligible overhead
+- Larger rerankers (0.6B+) need a GPU for acceptable latency
 - The reranker is entirely optional — search works great without it
 
 ## AMD GPU Support (ROCm)
@@ -583,6 +633,62 @@ The chunker currently supports 22 extensions across:
 - Svelte
 - Markdown
 - YAML, TOML, and JSON
+
+## Uninstall
+
+To completely remove AGENT Context Local (app files, indexes, models, and MCP
+registration), run the uninstall script. Shared tools (uv, Python, git) are
+**not** removed.
+
+Review the scripts first if you want:
+[`scripts/uninstall.sh`](https://github.com/tlines2016/agent-context-code/blob/main/scripts/uninstall.sh)
+and
+[`scripts/uninstall.ps1`](https://github.com/tlines2016/agent-context-code/blob/main/scripts/uninstall.ps1)
+
+### macOS / Linux / Git Bash / WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/uninstall.sh | bash -s -- --force
+```
+
+Or if you have a local clone (interactive — will prompt for confirmation):
+
+```bash
+./scripts/uninstall.sh
+```
+
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/uninstall.ps1 | iex
+```
+
+Or if you have a local clone:
+
+```powershell
+.\scripts\uninstall.ps1
+```
+
+### Options
+
+| Flag / Parameter | Bash | PowerShell | Description |
+|------------------|------|------------|-------------|
+| Dry-run | `--dry-run` | `-WhatIf` | Preview what would be removed without deleting |
+| Force | `--force` | `-Force` | Skip confirmation prompt |
+| Skip MCP | `--skip-mcp-remove` | `-SkipMcpRemove` | Don't deregister the MCP server |
+| Custom project dir | `--project-dir DIR` | `-ProjectDir DIR` | Override app checkout path |
+| Custom storage dir | `--storage-dir DIR` | `-StorageDir DIR` | Override storage root path |
+
+### What gets removed
+
+- **App checkout**: `~/.local/share/agent-context-code` (Unix) or `%LOCALAPPDATA%\agent-context-code` (Windows)
+- **Storage root**: `~/.claude_code_search` (or `CODE_SEARCH_STORAGE` override) — includes models, indexes, and config
+- **MCP registration**: the `code-search` server entry
+
+### What is NOT removed
+
+- **uv**, **Python**, **git** — these are shared system tools
+- Any project source code you indexed (only the index is removed, not your code)
 
 ## Repository
 

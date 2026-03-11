@@ -196,7 +196,7 @@ else {
 $Profile = if ($env:CODE_SEARCH_PROFILE) { $env:CODE_SEARCH_PROFILE } else { "base" }
 $rerankerStatus = "skipped"
 if ($Profile -in @("reranker", "full")) {
-    $RerankerName = if ($env:CODE_SEARCH_RERANKER) { $env:CODE_SEARCH_RERANKER } else { "Qwen/Qwen3-Reranker-4B" }
+    $RerankerName = if ($env:CODE_SEARCH_RERANKER) { $env:CODE_SEARCH_RERANKER } else { "cross-encoder/ms-marco-MiniLM-L-6-v2" }
     Write-Host "Downloading reranker model: $RerankerName"
     $rerankerSuccess = $true
     Push-Location $ProjectDir
@@ -262,3 +262,4 @@ else {
 Write-Host ""
 Write-Host "Diagnostics: uv run --directory `"$ProjectDir`" python scripts/cli.py doctor"
 Write-Host "Setup guide: uv run --directory `"$ProjectDir`" python scripts/cli.py setup-guide"
+Write-Host "Uninstall:   irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/uninstall.ps1 | iex"
