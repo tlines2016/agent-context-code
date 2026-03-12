@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class IncrementalIndexResult:
     """Result of incremental indexing operation."""
-    
+
     files_added: int
     files_removed: int
     files_modified: int
@@ -36,7 +36,9 @@ class IncrementalIndexResult:
     success: bool
     error: Optional[str] = None
     graph_stats: Dict = field(default_factory=dict)
-    
+    graph_sync_ok: bool = True
+    graph_sync_error: Optional[str] = None
+
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
         result = {
@@ -48,10 +50,23 @@ class IncrementalIndexResult:
             'time_taken': self.time_taken,
             'success': self.success,
             'error': self.error,
+            'graph_sync_ok': self.graph_sync_ok,
         }
+        if self.graph_sync_error:
+            result['graph_sync_error'] = self.graph_sync_error
         if self.graph_stats:
             result['graph_stats'] = self.graph_stats
         return result
+
+
+@dataclass
+class AddChunksResult:
+    """Outcome details from chunk/embed/index add stage."""
+
+    chunks_added: int
+    chunking_errors: List[str] = field(default_factory=list)
+    embedding_error: Optional[str] = None
+    graph_index_errors: List[str] = field(default_factory=list)
 
 
 class IncrementalIndexer:
@@ -161,18 +176,69 @@ class IncrementalIndexer:
             
             # Process changes
             chunks_removed = self._remove_old_chunks(changes, project_name, project_path)
-            chunks_added = self._add_new_chunks(changes, project_path, project_name)
-            
-            # Update snapshot
-            self.snapshot_manager.save_snapshot(current_dag, {
-                'project_name': project_name,
-                'incremental_update': True,
-                'files_added': len(changes.added),
-                'files_removed': len(changes.removed),
-                'files_modified': len(changes.modified),
-                'indexing_config': indexing_config,
-            })
-            
+            add_result = self._add_new_chunks(changes, project_path, project_name)
+            # Keep compatibility with tests/mocks that still return an int.
+            if isinstance(add_result, int):
+                add_result = AddChunksResult(chunks_added=add_result)
+            chunks_added = add_result.chunks_added
+
+            graph_stats = {}
+            graph_sync_ok = True
+            graph_sync_error = None
+            index_sync_ok = True
+            index_sync_errors: List[str] = []
+
+            if add_result.chunking_errors:
+                index_sync_ok = False
+                index_sync_errors.append(
+                    f"Chunking failed for {len(add_result.chunking_errors)} file(s)"
+                )
+            if add_result.embedding_error:
+                index_sync_ok = False
+                index_sync_errors.append(f"Embedding failed: {add_result.embedding_error}")
+            if add_result.graph_index_errors:
+                graph_sync_ok = False
+                graph_sync_error = f"Graph indexing failed for {len(add_result.graph_index_errors)} file(s)"
+
+            if self.code_graph is not None:
+                try:
+                    # Incremental updates can invalidate cross-file links
+                    # (e.g. inheritance), so reconcile after add/remove steps.
+                    cross_edges = self.code_graph.resolve_cross_file_edges()
+                    logger.info(
+                        "Incremental graph reconciliation added %d cross-file edges",
+                        cross_edges,
+                    )
+                    graph_stats = self.code_graph.get_stats()
+                except Exception as exc:
+                    graph_sync_ok = False
+                    graph_sync_error = str(exc)
+                    logger.warning("Incremental graph reconciliation failed: %s", exc)
+
+            sync_ok = index_sync_ok and graph_sync_ok
+            sync_errors = []
+            if index_sync_errors:
+                sync_errors.extend(index_sync_errors)
+            if graph_sync_error:
+                sync_errors.append(f"Graph sync failed: {graph_sync_error}")
+
+            # Only advance the snapshot when all required stores succeeded.
+            if sync_ok:
+                self.snapshot_manager.save_snapshot(current_dag, {
+                    'project_name': project_name,
+                    'incremental_update': True,
+                    'files_added': len(changes.added),
+                    'files_removed': len(changes.removed),
+                    'files_modified': len(changes.modified),
+                    'indexing_config': indexing_config,
+                })
+            else:
+                logger.warning(
+                    "Snapshot not advanced for %s due to stage failures: %s",
+                    project_name,
+                    "; ".join(sync_errors) if sync_errors else "unknown",
+                )
+
             # Update index
             self.indexer.set_indexing_config(indexing_config)
             self.indexer.save_index()
@@ -188,7 +254,11 @@ class IncrementalIndexer:
                 chunks_added=chunks_added,
                 chunks_removed=chunks_removed,
                 time_taken=time.time() - start_time,
-                success=True
+                success=sync_ok,
+                error="; ".join(sync_errors) if sync_errors else None,
+                graph_stats=graph_stats,
+                graph_sync_ok=graph_sync_ok,
+                graph_sync_error=graph_sync_error,
             )
             
         except Exception as e:
@@ -240,6 +310,8 @@ class IncrementalIndexer:
             
             # Collect all chunks first, then embed in a single pass for efficiency
             all_chunks = []
+            chunking_errors: List[str] = []
+            graph_file_errors: List[str] = []
             for file_path in supported_files:
                 full_path = str(Path(project_path) / file_path)
                 try:
@@ -251,12 +323,15 @@ class IncrementalIndexer:
                             try:
                                 self.code_graph.index_file_chunks(full_path, chunks)
                             except Exception as exc:
+                                graph_file_errors.append(f"{file_path}: {exc}")
                                 logger.warning("Graph indexing failed for %s: %s", file_path, exc)
                 except Exception as e:
+                    chunking_errors.append(f"{file_path}: {e}")
                     logger.warning(f"Failed to chunk {file_path}: {e}")
 
             # Embed all chunks in one batched call
             all_embedding_results = []
+            embedding_error = None
             if all_chunks:
                 try:
                     all_embedding_results = self.embedder.embed_chunks(all_chunks)
@@ -265,6 +340,7 @@ class IncrementalIndexer:
                         embedding_result.metadata['project_name'] = project_name
                         embedding_result.metadata['content'] = chunk.content
                 except Exception as e:
+                    embedding_error = str(e)
                     logger.warning(f"Embedding failed: {e}")
             
             # Add all embeddings to index at once
@@ -275,23 +351,52 @@ class IncrementalIndexer:
 
             # Resolve cross-file edges in the graph after all files are
             # indexed (inheritance across files, etc.).
+            graph_sync_ok = True
+            graph_sync_error = None
+            index_sync_ok = True
+            index_sync_errors: List[str] = []
+            if chunking_errors:
+                index_sync_ok = False
+                index_sync_errors.append(f"Chunking failed for {len(chunking_errors)} file(s)")
+            if embedding_error:
+                index_sync_ok = False
+                index_sync_errors.append(f"Embedding failed: {embedding_error}")
             if self.code_graph is not None:
+                if graph_file_errors:
+                    graph_sync_ok = False
+                    graph_sync_error = f"Graph indexing failed for {len(graph_file_errors)} file(s)"
                 try:
                     cross_edges = self.code_graph.resolve_cross_file_edges()
                     logger.info("Resolved %d cross-file graph edges", cross_edges)
                 except Exception as e:
+                    graph_sync_ok = False
+                    graph_sync_error = str(e)
                     logger.warning("Cross-file graph resolution failed: %s", e)
-            
-            # Save snapshot
-            self.snapshot_manager.save_snapshot(dag, {
-                'project_name': project_name,
-                'full_index': True,
-                'total_files': len(all_files),
-                'supported_files': len(supported_files),
-                'chunks_indexed': chunks_added,
-                'indexing_config': indexing_config or {},
-            })
-            
+
+            sync_ok = index_sync_ok and graph_sync_ok
+            sync_errors = []
+            if index_sync_errors:
+                sync_errors.extend(index_sync_errors)
+            if graph_sync_error:
+                sync_errors.append(f"Graph sync failed: {graph_sync_error}")
+
+            # Only advance the snapshot when all required stores succeeded.
+            if sync_ok:
+                self.snapshot_manager.save_snapshot(dag, {
+                    'project_name': project_name,
+                    'full_index': True,
+                    'total_files': len(all_files),
+                    'supported_files': len(supported_files),
+                    'chunks_indexed': chunks_added,
+                    'indexing_config': indexing_config or {},
+                })
+            else:
+                logger.warning(
+                    "Snapshot not advanced for %s due to stage failures: %s",
+                    project_name,
+                    "; ".join(sync_errors) if sync_errors else "unknown",
+                )
+
             # Save index
             self.indexer.save_index()
 
@@ -311,8 +416,11 @@ class IncrementalIndexer:
                 chunks_added=chunks_added,
                 chunks_removed=0,
                 time_taken=time.time() - start_time,
-                success=True,
+                success=sync_ok,
+                error="; ".join(sync_errors) if sync_errors else None,
                 graph_stats=graph_stats,
+                graph_sync_ok=graph_sync_ok,
+                graph_sync_error=graph_sync_error,
             )
             
         except Exception as e:
@@ -373,7 +481,7 @@ class IncrementalIndexer:
         changes: FileChanges,
         project_path: str,
         project_name: str
-    ) -> int:
+    ) -> AddChunksResult:
         """Add chunks for new and modified files.
         
         Also populates the relational graph when a ``code_graph`` is available.
@@ -393,6 +501,8 @@ class IncrementalIndexer:
         
         # Collect all chunks first, then embed in a single pass
         chunks_to_embed = []
+        chunking_errors: List[str] = []
+        graph_index_errors: List[str] = []
         for file_path in supported_files:
             full_path = str(Path(project_path) / file_path)
             try:
@@ -404,11 +514,14 @@ class IncrementalIndexer:
                         try:
                             self.code_graph.index_file_chunks(full_path, chunks)
                         except Exception as exc:
+                            graph_index_errors.append(f"{file_path}: {exc}")
                             logger.warning("Graph indexing failed for %s: %s", file_path, exc)
             except Exception as e:
+                chunking_errors.append(f"{file_path}: {e}")
                 logger.warning(f"Failed to chunk {file_path}: {e}")
 
         all_embedding_results = []
+        embedding_error = None
         if chunks_to_embed:
             try:
                 all_embedding_results = self.embedder.embed_chunks(chunks_to_embed)
@@ -417,13 +530,19 @@ class IncrementalIndexer:
                     embedding_result.metadata['project_name'] = project_name
                     embedding_result.metadata['content'] = chunk.content
             except Exception as e:
+                embedding_error = str(e)
                 logger.warning(f"Embedding failed: {e}")
         
         # Add all embeddings to index at once
         if all_embedding_results:
             self.indexer.add_embeddings(all_embedding_results)
         
-        return len(all_embedding_results)
+        return AddChunksResult(
+            chunks_added=len(all_embedding_results),
+            chunking_errors=chunking_errors,
+            embedding_error=embedding_error,
+            graph_index_errors=graph_index_errors,
+        )
     
     
     def get_indexing_stats(self, project_path: str) -> Optional[Dict]:

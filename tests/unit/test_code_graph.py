@@ -196,6 +196,19 @@ class TestGraphTraversal:
         # Should reach all 4 symbols via helper→do_work→cls_1→__init__
         assert len(sg["symbols"]) == 4
 
+    def test_connected_subgraph_depth_boundaries_have_consistent_edges(self, populated_graph):
+        sg = populated_graph.get_connected_subgraph("cls_1", max_depth=1)
+        symbol_ids = {s["chunk_id"] for s in sg["symbols"]}
+        for edge in sg["edges"]:
+            assert edge["source_chunk_id"] in symbol_ids
+            assert edge["target_chunk_id"] in symbol_ids
+
+    def test_connected_subgraph_negative_depth_clamps_to_seed(self, populated_graph):
+        sg = populated_graph.get_connected_subgraph("helper_1", max_depth=-5)
+        assert len(sg["symbols"]) == 1
+        assert sg["symbols"][0]["chunk_id"] == "helper_1"
+        assert sg["edges"] == []
+
 
 # ---------------------------------------------------------------------------
 # index_file_chunks integration

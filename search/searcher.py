@@ -81,7 +81,6 @@ class IntelligentSearcher:
         self,
         query: str,
         k: int = 5,
-        search_mode: str = "semantic",
         context_depth: int = 1,
         filters: Optional[Dict[str, Any]] = None
     ) -> List[SearchResult]:
@@ -89,14 +88,12 @@ class IntelligentSearcher:
         
         This provides semantic search capabilities. For complete search coverage:
         - Use this tool for conceptual/functionality queries
-        - Use Claude Code's Grep for exact term matching
+        - Use your editor/CLI grep for exact term matching
         - Combine both for comprehensive results
         
         Args:
             query: Natural language query
             k: Number of results
-            search_mode: Accepted for API compatibility; currently ignored —
-                all searches use the semantic embedding backend.
             context_depth: Include related chunks
             filters: Optional filters
         """

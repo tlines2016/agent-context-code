@@ -16,6 +16,24 @@ Local semantic code search via MCP:
 - LanceDB-backed indexing and retrieval (`search/`)
 - MCP tool surface for Claude Code (`mcp_server/`)
 
+## Search and Graph Architecture
+
+- `search_code` is the default retrieval tool and includes lightweight
+  graph enrichment when available (relationship hints only; bounded payload).
+  Enrichment is non-mutating — it never creates graph DB files when absent.
+- `get_graph_context` is the separate deep graph endpoint for full structural
+  neighborhood expansion around a specific `chunk_id` up to `max_depth`.
+  Returns `found: false` with `miss_reason` when the seed chunk is not in the graph.
+- Keep this two-tier model: lightweight graph context in default search, deep
+  graph only when explicitly requested.
+- Graph edge types currently implemented: `contains`, `inherits`.
+  `imports` and `calls` are reserved but not yet extracted.
+- Indexing uses a consistency barrier: snapshot metadata is only advanced when
+  both vector and graph stores succeed.  `get_index_status` exposes
+  `sync_status` ("synced" / "degraded") for observability.
+- `clear_index` returns per-store outcomes: `vector_cleared`, `graph_cleared`,
+  `snapshot_cleared`.
+
 ## Setup Commands
 
 ```bash
@@ -53,11 +71,12 @@ claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA
 
 ## Storage Model
 
-All user data stays under `~/.claude_code_search` (or `CODE_SEARCH_STORAGE`):
+All user data stays under `~/.agent_code_search` (or `CODE_SEARCH_STORAGE`):
 
 - `models/` for local model cache
 - `install_config.json` for persisted model choice
-- `projects/{project}_{hash}/` for per-project index and snapshots
+- `projects/{project}_{hash}/` for per-project vector index and graph DB
+- `merkle/` for Merkle DAG snapshot and metadata files (keyed by project path hash)
 
 Directory permissions are set to `0700` on Unix/macOS (owner-only).
 Never move index database files into the target workspace.
@@ -70,7 +89,7 @@ matching for hybrid search (rebuilt during `optimize()`).
 
 ## Model Notes
 
-- Default embedding model: `Qwen/Qwen3-Embedding-0.6B`
+- Default embedding model: `mixedbread-ai/mxbai-embed-xsmall-v1`
 - Default reranker (when enabled): `cross-encoder/ms-marco-MiniLM-L-6-v2`
 - Embedding catalog: `embeddings/model_catalog.py`
 - Reranker catalog: `reranking/reranker_catalog.py`

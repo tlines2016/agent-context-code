@@ -6,6 +6,8 @@ Phase 3: Updated to work with LanceDB-based CodeIndexManager.
 from mcp_server.code_search_server import CodeSearchServer
 from mcp_server.code_search_mcp import CodeSearchMCP
 
+MAX_TOOL_DESCRIPTION_LENGTH = 2000
+
 
 class TestMCPToolDescriptions:
     """Test descriptions for all MCP tools."""
@@ -21,7 +23,11 @@ class TestMCPToolDescriptions:
         tool = self.tools.get(tool_name)
         desc_len = len(tool.description.strip())
         assert desc_len > 0, f"Tool '{tool_name}' has no description"
-        assert desc_len < 500, f"Tool '{tool_name}' description too long: {desc_len} chars"
+        # Keep a generous upper bound so rich guidance in strings.yaml is allowed
+        # while still catching accidental runaway description growth.
+        assert desc_len < MAX_TOOL_DESCRIPTION_LENGTH, (
+            f"Tool '{tool_name}' description too long: {desc_len} chars"
+        )
 
     def test_search_code_description(self):
         """Test search_code tool has description."""

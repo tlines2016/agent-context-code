@@ -1,59 +1,93 @@
 tools:
   search_code: |
-    Search code by natural language query using semantic similarity. Returns ranked results with file paths, line numbers, similarity scores, and code snippets. Use for understanding functionality, finding patterns, or discovering related code.
-    Minimal usage: search_code("authentication")
-    Full usage: search_code("authentication", k=10, file_pattern="*.py")
-    Cross-project: search_code("auth", project_path="/other/project") — searches another indexed project without changing active context.
+    Semantic code search — the primary entry point for finding code by meaning. Returns ranked results with file paths, line numbers, similarity scores, and code snippets. On indexed projects, use this proactively at the start of any task to orient yourself — it surfaces relevant code by meaning rather than exact keywords, for bug investigation, feature work, refactoring, and exploring unfamiliar areas.
+    USE WHEN: Finding code by description, concept, or keyword (e.g. "authentication logic", "database connection pooling"). Use early in any task to build context before making changes — requires an indexed project (run index_directory first; auto-reindex keeps the index current).
+    DO NOT USE WHEN: You already have a chunk_id and want structurally similar code (use find_similar_code) or deep relationship traversal (use get_graph_context).
+    Key args:
+      query (required): natural language description of code to find.
+      k: number of results (1–100, default 5).
+      file_pattern: glob filter (e.g. "*.py", "src/**/*.ts").
+      chunk_type: filter by "function", "class", "method", etc.
+      project_path: search a different indexed project without switching context.
+    Example: search_code("retry logic with exponential backoff", k=10, file_pattern="*.py")
+    Cross-project: search_code("auth middleware", project_path="/other/repo")
 
   index_directory: |
-    Index a codebase using semantic embeddings. Each project gets isolated storage under ~/.claude_code_search/projects/. Multiple projects can be indexed independently.
-    Minimal usage: index_directory("/path/to/project")
-    Full usage: index_directory("/path/to/project", project_name="project", file_pattern="*.py", incremental=False)
+    Index a codebase for semantic search. Creates isolated per-project storage. Run before searching a new project.
+    USE WHEN: A project has never been indexed, or you want to force a full re-index.
+    DO NOT USE WHEN: The project is already indexed — search_code auto-refreshes stale indexes before each search.
+    Key args:
+      directory_path (required): absolute path to the project root.
+      project_name, file_patterns: optional display name and glob includes (sensible defaults).
+      incremental: False to force full re-index (default True).
+    Example: index_directory("/home/user/my-project")
 
   find_similar_code: |
-    Find code chunks functionally similar to a reference chunk. Useful for finding alternative implementations, code duplication, or refactoring related code.
-    Usage: find_similar_code(chunk_id from search_code, k=5)
+    Find code structurally or functionally similar to a known chunk. Returns ranked matches by embedding distance.
+    USE WHEN: You have a chunk_id from search_code and want duplicates, alternative implementations, or refactoring candidates.
+    DO NOT USE WHEN: You are starting a fresh search — use search_code instead. This tool requires a chunk_id, not a query string.
+    Key args:
+      chunk_id (required): identifier from a search_code result.
+      k: number of similar chunks to return (default 5).
+    Example: find_similar_code("src/auth.py::authenticate_user::0", k=10)
 
-  get_index_status: Get current index statistics and model status for the active project.
+  get_index_status: |
+    Get index health, sync status, and metadata for the active project.
+    USE WHEN: You need to check whether a project is indexed, verify sync state (synced/degraded), or inspect storage metrics.
+    Returns: chunk count, storage size, vector/graph/snapshot sync status, model info, and reranker state.
 
   list_projects: |
-    List all indexed projects with their paths and metadata.
-    Multi-project workflow: list_projects() → switch_project("/path") → search_code("query")
-    Or query without switching: search_code("query", project_path="/path")
+    List all indexed projects with paths and metadata.
+    USE WHEN: Discovering available projects or finding a project_path for cross-project search.
+    Example: list_projects()
 
   switch_project: |
-    Switch active project. All subsequent search_code calls (without project_path) will target this project.
-    Usage: switch_project("/path/to/project")
-    Tip: Use list_projects() to see available projects and their paths.
+    Switch the active project context. Subsequent search_code calls (without explicit project_path) target this project.
+    USE WHEN: Making multiple searches against a different project.
+    DO NOT USE WHEN: Single cross-project query — pass project_path to search_code instead.
+    Key args:
+      project_path (required): absolute path to an indexed project.
+    Example: switch_project("/home/user/other-project")
 
-  index_test_project: Index built-in sample project to test the search setup.
+  index_test_project: Index the built-in sample project to verify that search setup is working correctly.
 
-  clear_index: Clear the search index, relational graph, and metadata for the current active project.
+  clear_index: |
+    DESTRUCTIVE: Permanently deletes the active project's vector index, graph, and snapshot metadata. Cannot be undone — re-indexing required to restore search.
+    USE WHEN: Index is corrupted or you need a clean slate.
+    Returns: per-store outcomes (vector_cleared, graph_cleared, snapshot_cleared).
 
   get_graph_context: |
-    Retrieve structural relationships around a code chunk. Shows callers, callees, parent classes, and other connections from the relational graph built during indexing.
-    Usage: get_graph_context(chunk_id="abc123", max_depth=2)
-    Cross-project: get_graph_context(chunk_id="abc123", project_path="/other/project")
+    Deep structural traversal around a code chunk. Returns containment (class→method) and inheritance (child→parent) relationships within max_depth hops.
+    USE WHEN: You have a chunk_id from search_code and need to understand how it connects to surrounding code (parent class, sibling methods, inheritance chain).
+    DO NOT USE WHEN: You want to find code by meaning — use search_code (which already includes lightweight graph hints).
+    Key args:
+      chunk_id (required): identifier from a search_code result.
+      max_depth: traversal depth (default 2, keep small — 1–3 recommended).
+      project_path: query a different project's graph without switching context.
+    Returns found=true with symbols/edges, or found=false with miss_reason when chunk is absent from the graph.
+    Example: get_graph_context(chunk_id="src/auth.py::AuthService::0", max_depth=2)
 
 help: |
-  # Multi-project code search
+  # Code Search Tools — Quick Reference
 
-  Each project is independently indexed and isolated.
+  ## Tip: Use search_code proactively
+  On indexed projects, run `search_code` early in any task to orient yourself — it surfaces relevant code by meaning, not just exact keywords. Useful for understanding unfamiliar areas, investigating bugs, or scoping changes before reading files.
 
-  ## Workflow options
+  ## First-time setup
+  1. `index_directory("/path/to/project")` — index a codebase
+  2. `search_code("your query")` — search by meaning
 
-  ### Option A: Switch active project
-  1. `list_projects()` — see all indexed projects
-  2. `switch_project("/path/to/project")` — make it active
-  3. `search_code("query")` — searches active project
+  ## Search → Drill-down workflow
+  1. `search_code("query")` — find relevant code
+  2. `find_similar_code(chunk_id)` — find related chunks (needs chunk_id from step 1)
+  3. `get_graph_context(chunk_id)` — explore structural relationships (optional)
 
-  ### Option B: Cross-project search (no context switch)
-  `search_code("query", project_path="/path/to/other/project")`
+  ## Multi-project
+  - **One-off query**: `search_code("query", project_path="/other/repo")`
+  - **Switch context**: `switch_project("/other/repo")` then `search_code("query")`
+  - **Discover projects**: `list_projects()`
 
-  ## Basic workflow
-  1. Index: `index_directory("/path/to/project")`
-  2. Search: `search_code("description of code")`
-  3. Find similar: `find_similar_code(chunk_id from search_code)`
-  4. Graph context: `get_graph_context(chunk_id)` — see relationships
-
-  See tool descriptions for all available options.
+  ## Maintenance
+  - `get_index_status()` — check index health and sync state
+  - `clear_index()` — reset active project index (destructive)
+  - `index_test_project()` — verify setup with sample data

@@ -780,8 +780,8 @@ class TestFullSearchFlow:
         index_manager.add_embeddings(embeddings)
         assert index_manager.get_index_size() == len(embeddings), "Re-add after clear should work"
     
-    def test_search_modes_and_filtering(self, test_project_path, mock_storage_dir):
-        """Test different search modes and advanced filtering."""
+    def test_search_filtering_and_constraints(self, test_project_path, mock_storage_dir):
+        """Test advanced filtering constraints in index_manager.search."""
         chunker = MultiLanguageChunker(str(test_project_path))
         all_chunks = []
         

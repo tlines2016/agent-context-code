@@ -3,28 +3,48 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-context-code"
-version = "0.1.0"
-# Vector backend: LanceDB (embedded, serverless). Default model: Qwen/Qwen3-Embedding-0.6B.
-description = "Local semantic code search for Claude Code (MCP) using LanceDB, Unsloth Qwen3-Embedding, and AST/tree-sitter chunking. 100% local embeddings and indexing."
+name = "agent-context-local"
+version = "1.0.0"
+description = "Local semantic code search for AI coding assistants via MCP. Hybrid BM25 + vector search with tree-sitter AST chunking. 100% local — no API keys, no uploads."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 authors = [
-    { name = "Farhan Ali Raza" }
+    { name = "tlines2016", email = "tlines2016@hotmail.com" }
 ]
 maintainers = [
-    { name = "Farhan Ali Raza" }
+    { name = "tlines2016", email = "tlines2016@hotmail.com" }
 ]
 keywords = [
     "semantic-search",
     "code-search",
+    "code-indexing",
+    "code-index",
+    "code-context",
+    "code-analysis",
     "embeddings",
+    "vector-search",
+    "hybrid-search",
     "lancedb",
     "mcp",
+    "mcp-server",
+    "mcp-tool",
+    "model-context-protocol",
+    "ai-agent",
+    "ai-coding",
     "claude",
+    "cursor",
+    "codex",
+    "copilot",
     "tree-sitter",
+    "ast",
     "chunking",
-    "python",
+    "indexing",
+    "indexer",
+    "rag",
+    "retrieval",
+    "local",
+    "privacy",
 ]
 dependencies = [
     "click>=8.2.1",
@@ -38,10 +58,6 @@ dependencies = [
     "fastmcp>=2.12.2",
     "huggingface-hub>=0.34.4",
     "mcp>=1.13.1",
-    "pytest>=8.4.2",
-    "pytest-asyncio>=1.1.0",
-    "pytest-cov>=6.2.1",
-    "pytest-mock>=3.14.1",
     "PyYAML>=6.0",
     "rich>=14.1.0",
     # sentence-transformers: kept for model loading; also used by the Qwen3
@@ -66,12 +82,25 @@ dependencies = [
 ]
 
 classifiers = [
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Environment :: Console",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.1.0",
+    "pytest-cov>=6.2.1",
+    "pytest-mock>=3.14.1",
 ]
 
 [project.urls]
@@ -80,5 +109,16 @@ Repository = "https://github.com/tlines2016/agent-context-code"
 Documentation = "https://github.com/tlines2016/agent-context-code#readme"
 Issues = "https://github.com/tlines2016/agent-context-code/issues"
 
+[project.scripts]
+agent-context-local = "scripts.cli:main"
+agent-context-local-mcp = "mcp_server.server:main"
+
+[tool.setuptools]
+py-modules = ["common_utils"]
+
 [tool.setuptools.packages.find]
-include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*", "graph*"]
+include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*", "graph*", "scripts*"]
+
+[tool.setuptools.package-data]
+mcp_server = ["strings.yaml"]
+"*" = ["py.typed"]

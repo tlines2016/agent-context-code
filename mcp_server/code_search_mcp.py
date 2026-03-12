@@ -2,6 +2,7 @@
 
 import json
 import logging
+from importlib import resources as _importlib_resources
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -24,21 +25,47 @@ class CodeSearchMCP(FastMCP if FastMCP else object):
 
     def _load_strings(self) -> dict:
         """Load all strings (tool descriptions and help text) from strings.yaml file."""
-        strings_file = Path(__file__).parent / "strings.yaml"
-        with open(strings_file, 'r') as f:
-            data = yaml.safe_load(f)
-            assert isinstance(data, dict), "Expected a dict"
-            return {
-                "tools": data.get("tools", {}),
-                "help": data.get("help", "")
-            }
+        data = None
+        # Prefer importlib.resources for installed-package compatibility
+        try:
+            ref = _importlib_resources.files("mcp_server").joinpath("strings.yaml")
+            data = yaml.safe_load(ref.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+        # Filesystem fallback for source checkouts
+        if data is None:
+            strings_file = Path(__file__).parent / "strings.yaml"
+            with open(strings_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+
+        if not isinstance(data, dict):
+            logger.error(
+                "strings.yaml did not parse to a dict (got %s) — "
+                "tool descriptions will be empty",
+                type(data).__name__,
+            )
+            return {"tools": {}, "help": ""}
+
+        return {
+            "tools": data.get("tools", {}),
+            "help": data.get("help", ""),
+        }
 
     def _setup(self):
         """Setup all MCP tools, resources, and prompts."""
 
         # Register tools using getattr
         for tool_name, description in self._strings["tools"].items():
-            server_method = getattr(self.server, tool_name)
+            try:
+                server_method = getattr(self.server, tool_name)
+            except AttributeError:
+                logger.warning(
+                    "Tool '%s' defined in strings.yaml but not found on "
+                    "CodeSearchServer — skipping",
+                    tool_name,
+                )
+                continue
             self.tool(description=description)(server_method)
 
         # Register resources
@@ -58,12 +85,8 @@ class CodeSearchMCP(FastMCP if FastMCP else object):
             """Get help on using code search tools."""
             return self._strings["help"]
 
-    def run(self, transport: str = "stdio", host: str = "localhost", port: int = 8000):
+    def run(self, transport: str = "stdio"):
         """Run the MCP server with specified transport."""
         if transport == "http":
             transport = "sse"
-
-        if transport in ["sse", "streamable-http"]:
-            logger.info(f"Starting HTTP server on {host}:{port}")
-        # FastMCP not support host and port
         return super().run(transport=transport)

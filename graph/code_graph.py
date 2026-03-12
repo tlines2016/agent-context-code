@@ -6,7 +6,7 @@ It complements the LanceDB vector index:
 
 - **LanceDB** answers "what code is semantically similar to my query?"
 - **CodeGraph** answers "how does that code connect to the rest of the
-  codebase?" (callers, callees, parent classes, importers, etc.)
+  codebase?" (containment, inheritance; call/import edges when available)
 
 Schema design principles
 ------------------------
@@ -23,15 +23,18 @@ Schema design principles
 
 Edge types
 ----------
-``imports``
-    File A imports symbol from file B.
-``calls``
-    Function/method A calls function/method B (intra-file only for now;
-    cross-file call resolution requires type inference beyond tree-sitter).
-``inherits``
-    Class A extends or implements class B.
 ``contains``
-    Class A contains method B (parent→child relationship).
+    Class A contains method B (parent→child relationship).  **Implemented.**
+``inherits``
+    Class A extends or implements class B.  Intra-file containment edges
+    are created during ``index_file_chunks``; cross-file inheritance is
+    resolved by ``resolve_cross_file_edges``.  **Implemented.**
+``imports``
+    File A imports symbol from file B.  **Not yet implemented** — reserved
+    for future extraction.
+``calls``
+    Function/method A calls function/method B.  **Not yet implemented** —
+    requires call-site detection logic beyond current tree-sitter chunking.
 """
 
 import logging
@@ -57,7 +60,7 @@ class CodeGraph:
     db_path : str or Path
         Path to the SQLite database file.  Created if it does not exist.
         Typically lives alongside the LanceDB index under the project
-        storage directory (e.g. ``~/.claude_code_search/projects/foo_abc123/
+        storage directory (e.g. ``~/.agent_code_search/projects/foo_abc123/
         index/code_graph.db``).
     """
 
@@ -323,12 +326,21 @@ class CodeGraph:
             ``{"symbols": [...], "edges": [...]}`` where each symbol /
             edge is a dict.
         """
+        # Keep traversal resilient for direct callers that pass invalid depth.
+        # Server-layer validation enforces non-negative ints for MCP requests.
+        try:
+            traversal_depth = int(max_depth)
+        except (TypeError, ValueError):
+            traversal_depth = 0
+        if traversal_depth < 0:
+            traversal_depth = 0
+
         visited_ids: set = set()
         frontier = {chunk_id}
         all_edges: List[Dict[str, Any]] = []
 
         # depth 0 = seed only; depth 1 = seed + direct neighbours; etc.
-        for _ in range(max_depth + 1):
+        for _ in range(traversal_depth + 1):
             if not frontier:
                 break
             next_frontier: set = set()
@@ -355,6 +367,13 @@ class CodeGraph:
         seen_edges: set = set()
         unique_edges: List[Dict[str, Any]] = []
         for e in all_edges:
+            # Enforce depth-boundary consistency: only include edges fully
+            # contained in the returned symbol set.
+            if (
+                e["source_chunk_id"] not in visited_ids
+                or e["target_chunk_id"] not in visited_ids
+            ):
+                continue
             key = (e["source_chunk_id"], e["target_chunk_id"], e["edge_type"])
             if key not in seen_edges:
                 seen_edges.add(key)

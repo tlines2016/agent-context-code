@@ -96,7 +96,7 @@ class CodeIndexManager:
 
     This is the Phase 3 replacement for the FAISS + SQLiteDict backend.
     All data is stored in a single LanceDB table under the centralised
-    storage directory (``~/.claude_code_search/``), never inside the
+    storage directory (``~/.agent_code_search/``), never inside the
     user's project workspace.
 
     Public API
@@ -133,6 +133,7 @@ class CodeIndexManager:
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._file_chunk_counts: Dict[str, int] = {}
         self._indexing_config: Dict[str, Any] = {}
+        self._content_changed: bool = False
 
         # Attempt to open an existing table (created during a previous
         # indexing run).  If it does not exist yet we create it lazily
@@ -327,6 +328,7 @@ class CodeIndexManager:
             })
 
         self._table.add(rows)
+        self._content_changed = True
         self._logger.info("Added %d embeddings to LanceDB", len(rows))
         self._stats_cache = None  # Invalidate stats cache
 
@@ -516,6 +518,8 @@ class CodeIndexManager:
             return 0
 
         removed = before - self._table.count_rows()
+        if removed > 0:
+            self._content_changed = True
         self._logger.info("Removed %d chunks for %s", removed, file_path)
         self._stats_cache = None
         return removed
@@ -571,13 +575,18 @@ class CodeIndexManager:
         except Exception as exc:
             self._logger.warning("LanceDB optimize failed: %s", exc)
 
-        # Rebuild the FTS index after compaction so hybrid search stays
-        # current with the latest content changes.
-        try:
-            self._table.create_fts_index("text", replace=True)
-            self._logger.info("FTS index rebuilt after optimization")
-        except Exception as exc:
-            self._logger.warning("FTS index rebuild failed: %s", exc)
+        # Only rebuild the FTS index when content actually changed (adds/deletes
+        # occurred since the last optimize).  Skipping the rebuild when nothing
+        # changed avoids an expensive full-text re-index on no-op sessions.
+        if self._content_changed:
+            try:
+                self._table.create_fts_index("text", replace=True)
+                self._logger.info("FTS index rebuilt after optimization")
+            except Exception as exc:
+                self._logger.warning("FTS index rebuild failed: %s", exc)
+            self._content_changed = False
+        else:
+            self._logger.debug("Skipping FTS rebuild — no content changes since last optimize")
 
     def save_index(self) -> None:
         """Persist stats to disk.
@@ -737,15 +746,20 @@ class CodeIndexManager:
                 pass  # Fall through to the full-scan fallback below.
 
             if df is None:
-                # Fallback: full table scan, then select only the needed columns.
-                # This loads the vector column initially but discards it before
-                # any Python-side iteration, limiting per-row overhead.
+                # Fallback: column-projected scanner that avoids loading
+                # the vector column into memory.
                 try:
-                    full_df = self._table.to_pandas()
                     needed = ["relative_path", "folder_structure", "chunk_type", "tags"]
-                    df = full_df[[c for c in needed if c in full_df.columns]]
-                except Exception as exc:
-                    self._logger.warning("Failed to compute stats: %s", exc)
+                    scanner = self._table.scanner(columns=needed)
+                    arrow_tbl = scanner.to_table()
+                    df = arrow_tbl.to_pandas()
+                except Exception:
+                    # Last resort: full scan
+                    try:
+                        full_df = self._table.to_pandas()
+                        df = full_df[[c for c in needed if c in full_df.columns]]
+                    except Exception as exc:
+                        self._logger.warning("Failed to compute stats: %s", exc)
 
             if df is not None:
                 for _, row in df.iterrows():
@@ -834,7 +848,7 @@ class CodeIndexManager:
                 for pattern in value:
                     safe = CodeIndexManager._escape_like_pattern(pattern)
                     pattern_clauses.append(
-                        f"relative_path LIKE '%{safe}%'"
+                        f"relative_path LIKE '%{safe}%' ESCAPE '\\'"
                     )
                 if pattern_clauses:
                     clauses.append("(" + " OR ".join(pattern_clauses) + ")")
@@ -850,7 +864,7 @@ class CodeIndexManager:
                 fc = []
                 for folder in folders:
                     safe = CodeIndexManager._escape_like_pattern(folder).replace('"', '""')
-                    fc.append(f'folder_structure LIKE \'%"{safe}"%\'')
+                    fc.append(f'folder_structure LIKE \'%"{safe}"%\' ESCAPE \'\\\'')
                 if fc:
                     clauses.append("(" + " OR ".join(fc) + ")")
             elif key == "tags":
@@ -862,7 +876,7 @@ class CodeIndexManager:
                 tc = []
                 for tag in tags:
                     safe = CodeIndexManager._escape_like_pattern(tag).replace('"', '""')
-                    tc.append(f'tags LIKE \'%"{safe}"%\'')
+                    tc.append(f'tags LIKE \'%"{safe}"%\' ESCAPE \'\\\'')
                 if tc:
                     clauses.append("(" + " OR ".join(tc) + ")")
 

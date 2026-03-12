@@ -20,7 +20,11 @@ import sys
 import logging
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from common_utils import get_storage_dir, save_local_install_config
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import get_storage_dir, save_local_install_config
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -32,10 +36,11 @@ from embeddings.huggingface_auth import (
     build_huggingface_auth_error,
     configure_huggingface_auth,
 )
-from common_utils import save_local_install_config
+
+DEFAULT_MODEL = "mixedbread-ai/mxbai-embed-xsmall-v1"
 
 
-def download_model(model_name: str = "google/embeddinggemma-300m", storage_dir: str = None):
+def download_model(model_name: str = DEFAULT_MODEL, storage_dir: str = None):
     """Download and verify an embedding model, then persist the choice.
 
     Downloads the model into ``<storage_dir>/models/`` using SentenceTransformer,
@@ -44,10 +49,9 @@ def download_model(model_name: str = "google/embeddinggemma-300m", storage_dir: 
     failure (with an actionable HuggingFace auth error printed to stdout).
     """
     if storage_dir is None:
-        storage_dir = os.path.expanduser("~/.claude_code_search")
-    
-    # Create storage directory
-    storage_path = Path(storage_dir)
+        storage_path = get_storage_dir()
+    else:
+        storage_path = Path(storage_dir)
     models_dir = storage_path / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     
@@ -86,13 +90,13 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Download embedding model for testing")
     parser.add_argument(
-        "--model", 
-        default="google/embeddinggemma-300m",
+        "--model",
+        default=DEFAULT_MODEL,
         help="Model name to download"
     )
     parser.add_argument(
         "--storage-dir",
-        help="Storage directory (default: ~/.claude_code_search)"
+        help="Storage directory (default: get_storage_dir())"
     )
     parser.add_argument(
         "--verbose", "-v",

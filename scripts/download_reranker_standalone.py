@@ -9,7 +9,7 @@ Called by the installer scripts when ``CODE_SEARCH_PROFILE`` is set to
 ``reranker`` or ``full``, or manually via:
 
     uv run scripts/download_reranker_standalone.py \
-        --storage-dir ~/.claude_code_search \
+        --storage-dir ~/.agent_code_search \
         --model Qwen/Qwen3-Reranker-4B -v
 
 Exit code semantics (same as download_model_standalone.py):
@@ -22,7 +22,11 @@ import sys
 import logging
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from common_utils import save_reranker_config
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import save_reranker_config
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -34,7 +38,6 @@ from embeddings.huggingface_auth import (
     build_huggingface_auth_error,
     configure_huggingface_auth,
 )
-from common_utils import save_reranker_config
 
 
 def download_reranker(
@@ -51,7 +54,7 @@ def download_reranker(
     Returns ``True`` on success, ``False`` on failure.
     """
     if storage_dir is None:
-        storage_dir = os.path.expanduser("~/.claude_code_search")
+        storage_dir = os.path.expanduser("~/.agent_code_search")
 
     storage_path = Path(storage_dir)
     models_dir = storage_path / "models"
@@ -115,7 +118,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--storage-dir",
-        help="Storage directory (default: ~/.claude_code_search)",
+        help="Storage directory (default: ~/.agent_code_search)",
     )
     parser.add_argument(
         "--verbose", "-v",

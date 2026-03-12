@@ -131,7 +131,7 @@ class TestMCPProjectStorage:
 
         This test is self-contained: it creates a real LanceDB table directly
         via CodeIndexManager so that the test does not depend on internet
-        access, model loading, or pre-existing state in ~/.claude_code_search/.
+        access, model loading, or pre-existing state in ~/.agent_code_search/.
         """
         # Use a fresh directory so the test never depends on pre-existing state.
         fake_project = tmp_path / "lancedb_switch_project"

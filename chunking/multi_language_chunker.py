@@ -46,8 +46,7 @@ class MultiLanguageChunker:
         self.indexing_config = self._load_indexing_config()
         self.excluded_extensions = set(self.indexing_config['exclude_extensions'])
         self.supported_extensions = self.SUPPORTED_EXTENSIONS - self.excluded_extensions
-        # Use AST chunker for Python (more mature implementation)
-        # Use tree-sitter for programming languages and a structured parser for config files
+        # Use tree-sitter for all programming languages and a structured parser for config files
         self.tree_sitter_chunker = TreeSitterChunker()
         self.structured_data_chunker = StructuredDataChunker(
             root_path=root_path,
@@ -170,16 +169,13 @@ class MultiLanguageChunker:
             return []
 
         # Use tree-sitter for programming languages and the structured parser for config files
-        try:
-            if Path(file_path).suffix.lower() in STRUCTURED_DATA_EXTENSION_MAP:
-                return self.structured_data_chunker.chunk_file(file_path)
+        if Path(file_path).suffix.lower() in STRUCTURED_DATA_EXTENSION_MAP:
+            return self.structured_data_chunker.chunk_file(file_path)
 
-            tree_chunks = self.tree_sitter_chunker.chunk_file(file_path)
-            # Convert TreeSitterChunk to CodeChunk
-            return self._convert_tree_chunks(tree_chunks, file_path)
-        except Exception as e:
-            logger.error(f"Failed to chunk file {file_path}: {e}")
-            return []
+        tree_chunks = self.tree_sitter_chunker.chunk_file(file_path)
+        # Convert TreeSitterChunk to CodeChunk
+        return self._convert_tree_chunks(tree_chunks, file_path)
+        # Let exceptions propagate — callers handle them and populate chunking_errors
     
     def _convert_tree_chunks(self, tree_chunks: List[TreeSitterChunk], file_path: str) -> List[CodeChunk]:
         """Convert tree-sitter chunks to CodeChunk format.
@@ -342,19 +338,23 @@ class MultiLanguageChunker:
         else:
             valid_extensions = self.supported_extensions
         
-        # Find all files with supported extensions
-        for ext in valid_extensions:
-            for file_path in dir_path.rglob(f'*{ext}'):
-                # Skip common large/build/tooling directories
-                if any(part in self.DEFAULT_IGNORED_DIRS for part in file_path.parts):
-                    continue
-                
-                try:
-                    chunks = self.chunk_file(str(file_path))
-                    all_chunks.extend(chunks)
-                    logger.debug(f"Chunked {len(chunks)} from {file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to chunk {file_path}: {e}")
+        # Single-pass directory walk — one rglob("*") instead of N per-extension
+        ignored = self.DEFAULT_IGNORED_DIRS
+        for file_path in dir_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if file_path.suffix not in valid_extensions:
+                continue
+            # Skip common large/build/tooling directories
+            if any(part in ignored for part in file_path.parts):
+                continue
+
+            try:
+                chunks = self.chunk_file(str(file_path))
+                all_chunks.extend(chunks)
+                logger.debug(f"Chunked {len(chunks)} from {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to chunk {file_path}: {e}")
         
         logger.info(f"Total chunks from directory: {len(all_chunks)}")
         return all_chunks

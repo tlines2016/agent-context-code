@@ -4,7 +4,7 @@ This is the lowest-level shared module in the project.  It provides:
 
 - ``VERSION``: the single source of truth for the package version string.
 - ``get_storage_dir()``: resolves and caches the storage root
-  (``~/.claude_code_search`` or ``CODE_SEARCH_STORAGE``).
+  (``~/.agent_code_search`` or ``CODE_SEARCH_STORAGE``).
 - ``load_local_install_config()`` / ``save_local_install_config()``:
   read/write the persisted model selection in ``install_config.json``.
 - ``normalize_path()``: cross-platform path normalisation.
@@ -24,7 +24,16 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.1.0"
+from importlib.metadata import version as _pkg_version, PackageNotFoundError
+try:
+    VERSION = _pkg_version("agent-context-local")
+except PackageNotFoundError:
+    VERSION = "0.0.0-dev"  # fallback for editable/source installs
+
+
+def is_installed_package() -> bool:
+    """True when running as a pip/uv-installed package, False for source checkout."""
+    return VERSION != "0.0.0-dev"
 
 
 def is_windows() -> bool:
@@ -50,14 +59,30 @@ def get_storage_dir() -> Path:
 
     The directory is chosen by the following priority:
     1. ``CODE_SEARCH_STORAGE`` environment variable (if set).
-    2. ``~/.claude_code_search`` (works on all platforms – ``~`` expands
+    2. ``~/.agent_code_search`` (works on all platforms – ``~`` expands
        to ``%USERPROFILE%`` on Windows and ``$HOME`` on Unix).
     """
     raw_path = os.getenv('CODE_SEARCH_STORAGE', '')
     if raw_path:
         storage_dir = Path(os.path.expanduser(raw_path)).resolve()
     else:
-        storage_dir = Path.home() / '.claude_code_search'
+        legacy_path = Path.home() / '.claude_code_search'
+        storage_dir = Path.home() / '.agent_code_search'
+        # Preserve compatibility for existing installs that still have the
+        # legacy folder name and no explicit CODE_SEARCH_STORAGE override.
+        if legacy_path.exists() and not storage_dir.exists():
+            try:
+                legacy_path.rename(storage_dir)
+                logger.info("Migrated storage from %s to %s", legacy_path, storage_dir)
+            except OSError as exc:
+                logger.warning(
+                    "Could not migrate legacy storage from %s to %s: %s. "
+                    "Continuing to use legacy path.",
+                    legacy_path,
+                    storage_dir,
+                    exc,
+                )
+                storage_dir = legacy_path
     try:
         storage_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

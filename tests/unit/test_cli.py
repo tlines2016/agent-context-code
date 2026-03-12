@@ -43,7 +43,7 @@ class TestCLICommands:
         """version command should print version and platform."""
         cmd_version()
         out = capsys.readouterr().out
-        assert "agent-context-code" in out
+        assert "agent-context-local" in out
         assert "Python:" in out
 
     def test_paths_runs_without_error(self, capsys):

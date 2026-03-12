@@ -15,6 +15,8 @@ It provides **100% local** semantic code search over project source files:
 
 - **Search backend:** LanceDB in `search/indexer.py`
 - **Retrieval & ranking:** `search/searcher.py` (IntelligentSearcher)
+- **Default search graph policy:** `search_code` returns lightweight graph relationship enrichment in normal search responses when available (bounded hints, not deep traversal)
+- **Deep graph policy:** `get_graph_context` is the separate endpoint for deeper symbol/edge neighborhood traversal (`max_depth`) when an agent explicitly needs structural expansion
 - **Embedding runtime:** SentenceTransformers in `embeddings/embedder.py`
 - **Model presets:** `embeddings/model_catalog.py` (MODEL_CATALOG dict, prefix config)
 - **Multi-language chunking:** `chunking/multi_language_chunker.py` (tree-sitter AST)
@@ -28,9 +30,12 @@ It provides **100% local** semantic code search over project source files:
 All index artifacts must stay under:
 
 ```text
-~/.claude_code_search/                  # override with CODE_SEARCH_STORAGE
+~/.agent_code_search/                   # override with CODE_SEARCH_STORAGE
 ├── models/
 ├── install_config.json
+├── merkle/                             # Merkle snapshots/metadata (global)
+│   ├── {project_hash}_snapshot.json
+│   └── {project_hash}_metadata.json
 └── projects/
     └── {project_name}_{hash}/
         ├── project_info.json
@@ -38,7 +43,6 @@ All index artifacts must stay under:
         │   ├── lancedb/
         │   │   └── code_chunks.lance/
         │   └── stats.json
-        └── snapshots/
 ```
 
 Invariants:
@@ -49,7 +53,7 @@ Invariants:
 
 ## Model Selection Reality
 
-- **Default today:** `google/embeddinggemma-300m`
+- **Default today:** `Qwen/Qwen3-Embedding-0.6B`
 - **Supported alternatives:** catalog in `embeddings/model_catalog.py`
 - **Installer-selected model:** persisted in `install_config.json`
 - **Override:** `CODE_SEARCH_MODEL` environment variable
@@ -74,6 +78,7 @@ Canonical public repository URL in user-facing docs/scripts:
 
 - Do not reintroduce FAISS-specific runtime assumptions in docs/install messaging.
 - Keep `claude mcp add code-search ...` examples valid for current client flows.
+- Add equivalent MCP registration examples for non-Claude clients where docs are user-facing.
 - Treat model download failures as recoverable; install can complete but must
   clearly report not-ready-for-indexing state.
 - Preserve non-destructive update behavior in installer flows.

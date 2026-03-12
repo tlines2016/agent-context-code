@@ -7,8 +7,8 @@ set -euo pipefail
 
 REPO_URL="https://github.com/tlines2016/agent-context-code"
 PROJECT_DIR="${HOME}/.local/share/agent-context-code"
-STORAGE_DIR="${CODE_SEARCH_STORAGE:-${HOME}/.claude_code_search}"
-MODEL_NAME="${CODE_SEARCH_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
+STORAGE_DIR="${CODE_SEARCH_STORAGE:-${HOME}/.agent_code_search}"
+MODEL_NAME="${CODE_SEARCH_MODEL:-mixedbread-ai/mxbai-embed-xsmall-v1}"
 
 # msg: wrapper around printf for consistent single-line output.
 # Named 'msg' instead of 'print' to avoid shadowing the bash builtin.
@@ -51,8 +51,18 @@ if ! command -v uv >/dev/null 2>&1; then
   msg "uv not found. Installing uv..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
   if ! command -v uv >/dev/null 2>&1; then
-    msg "ERROR: uv installation failed or not found in PATH."
-    exit 1
+    for candidate in "$HOME/.local/bin" "$HOME/.cargo/bin" "/usr/local/bin"; do
+      if [[ -x "$candidate/uv" ]]; then
+        export PATH="$candidate:$PATH"
+        msg "Found uv at $candidate"
+        break
+      fi
+    done
+    if ! command -v uv >/dev/null 2>&1; then
+      msg "ERROR: uv was installed but is not in your PATH."
+      msg "Try adding ~/.local/bin or ~/.cargo/bin to your PATH, then re-run."
+      exit 1
+    fi
   fi
 fi
 
@@ -61,6 +71,23 @@ fi
 # 2) Update (clean) : .git exists, no local changes → git pull
 # 3) Update (dirty) : .git exists, uncommitted changes → interactive
 #    (stash+pull / keep / delete+reclone; default=stash when non-interactive)
+
+# Guard: if PROJECT_DIR exists but is not a git repo, check before proceeding
+if [[ -d "${PROJECT_DIR}" && ! -d "${PROJECT_DIR}/.git" ]]; then
+  if [[ -n "$(ls -A "${PROJECT_DIR}" 2>/dev/null)" ]]; then
+    # Non-empty, non-git directory — check for project signature
+    if [[ -f "${PROJECT_DIR}/mcp_server/server.py" && -f "${PROJECT_DIR}/scripts/cli.py" ]]; then
+      msg "WARNING: ${PROJECT_DIR} looks like a previous install without .git"
+      msg "Removing and re-cloning..."
+      rm -rf "${PROJECT_DIR}"
+    else
+      msg "ERROR: ${PROJECT_DIR} exists and contains unrelated files."
+      msg "Please move or delete it, or set a different PROJECT_DIR."
+      exit 1
+    fi
+  fi
+fi
+
 mkdir -p "${PROJECT_DIR}"
 IS_UPDATE=0
 if [[ -d "${PROJECT_DIR}/.git" ]]; then
@@ -104,6 +131,10 @@ if [[ -d "${PROJECT_DIR}/.git" ]]; then
     msg "Updating repository..."
     git -C "${PROJECT_DIR}" remote set-url origin "${REPO_URL}"
     git -C "${PROJECT_DIR}" fetch --tags --prune
+    # --ff-only prevents silent overwrites of local work.
+    # Edge case: if someone manually committed inside the install dir and
+    # the branch has diverged, this will exit non-zero and abort the script.
+    # Fix: re-run the installer and choose [d]elete and reinstall at the prompt.
     git -C "${PROJECT_DIR}" pull --ff-only
     REPO_STATUS="ok"
   fi
@@ -122,17 +153,123 @@ else
   DEPS_STATUS="skipped"
 fi
 
-# FAISS package management is intentionally removed.
-# Why: runtime search backend is LanceDB, so installer should not claim or
-# mutate FAISS packages. We keep optional GPU detection only as a performance hint.
+# ── GPU-accelerated PyTorch installation ──────────────────────────────────
+# Detect GPU vendor and install the matching PyTorch build so embeddings
+# run on the accelerator instead of CPU.  Falls back gracefully to CPU
+# if detection fails or SKIP_GPU=1.
+#
+# Supported:
+#   NVIDIA (CUDA)    — detected via nvidia-smi; parses driver CUDA version
+#   AMD (ROCm)       — detected via rocminfo / rocm-smi; includes Strix Halo APUs
+#   Apple Silicon    — detected via uname; MPS is included in standard PyTorch
+#   CPU              — default fallback
+GPU_VENDOR="cpu"
+TORCH_INDEX_URL=""
+GPU_STATUS="cpu-only"
+
 if [[ "${SKIP_GPU:-0}" == "1" ]]; then
   msg "Skipping GPU detection (SKIP_GPU=1)."
-else
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    msg "NVIDIA GPU detected. Embedding generation may be faster with CUDA-enabled PyTorch."
-  else
-    msg "No NVIDIA GPU detected. Install still works on CPU."
+elif [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+  # Apple Silicon (M1/M2/M3/M4) — MPS is included in the default PyTorch
+  # macOS ARM64 build.  No special index URL needed.
+  GPU_VENDOR="mps"
+  GPU_STATUS="apple-mps"
+  msg "Apple Silicon detected — PyTorch MPS acceleration will be used automatically."
+elif command -v nvidia-smi >/dev/null 2>&1; then
+  GPU_VENDOR="nvidia"
+  # Parse the CUDA version from nvidia-smi header (e.g. "CUDA Version: 12.8")
+  CUDA_VER=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version:\s*\K[0-9]+\.[0-9]+' | head -1)
+  GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+  msg "NVIDIA GPU detected: ${GPU_NAME:-unknown} (driver CUDA ${CUDA_VER:-unknown})"
+
+  # Map driver CUDA version to the best available PyTorch CUDA index.
+  # PyTorch publishes wheels for specific CUDA minor versions; we pick the
+  # highest that the driver supports.  Newer drivers are backwards-compatible.
+  if [[ -n "${CUDA_VER}" ]]; then
+    CUDA_MAJOR="${CUDA_VER%%.*}"
+    CUDA_MINOR="${CUDA_VER#*.}"
+    if [[ "${CUDA_MAJOR}" -ge 13 ]] || { [[ "${CUDA_MAJOR}" -eq 12 ]] && [[ "${CUDA_MINOR}" -ge 8 ]]; }; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+      GPU_STATUS="nvidia-cu128"
+    elif [[ "${CUDA_MAJOR}" -eq 12 ]] && [[ "${CUDA_MINOR}" -ge 6 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/cu126"
+      GPU_STATUS="nvidia-cu126"
+    elif [[ "${CUDA_MAJOR}" -eq 12 ]] && [[ "${CUDA_MINOR}" -ge 4 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/cu124"
+      GPU_STATUS="nvidia-cu124"
+    elif [[ "${CUDA_MAJOR}" -eq 12 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/cu121"
+      GPU_STATUS="nvidia-cu121"
+    elif [[ "${CUDA_MAJOR}" -eq 11 ]] && [[ "${CUDA_MINOR}" -ge 8 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/cu118"
+      GPU_STATUS="nvidia-cu118"
+    else
+      msg "CUDA ${CUDA_VER} is older than 11.8 — falling back to CPU PyTorch."
+      msg "Consider updating your NVIDIA drivers for GPU acceleration."
+    fi
   fi
+elif command -v rocminfo >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1; then
+  GPU_VENDOR="amd"
+  # Detect ROCm version
+  ROCM_VER=""
+  if command -v rocminfo >/dev/null 2>&1; then
+    ROCM_VER=$(rocminfo 2>/dev/null | grep -oP 'HSA Runtime Version:\s*\K[0-9]+\.[0-9]+' | head -1)
+  fi
+  if [[ -z "${ROCM_VER}" ]] && command -v rocm-smi >/dev/null 2>&1; then
+    ROCM_VER=$(rocm-smi --showdriverversion 2>/dev/null | grep -oP '[0-9]+\.[0-9]+' | head -1)
+  fi
+  GPU_NAME=$(rocm-smi --showproductname 2>/dev/null | grep -oP 'GPU\[\d+\]\s*:\s*\K.*' | head -1)
+  msg "AMD GPU detected: ${GPU_NAME:-unknown} (ROCm ${ROCM_VER:-unknown})"
+
+  # ROCm PyTorch wheels — pick the best available index.
+  # Strix Halo APUs (Ryzen AI Max) require ROCm 6.2+.
+  if [[ -n "${ROCM_VER}" ]]; then
+    ROCM_MAJOR="${ROCM_VER%%.*}"
+    ROCM_MINOR="${ROCM_VER#*.}"
+    if [[ "${ROCM_MAJOR}" -ge 7 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.2.4"
+      GPU_STATUS="amd-rocm6.2"
+    elif [[ "${ROCM_MAJOR}" -eq 6 ]] && [[ "${ROCM_MINOR}" -ge 2 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.2.4"
+      GPU_STATUS="amd-rocm6.2"
+    elif [[ "${ROCM_MAJOR}" -eq 6 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"
+      GPU_STATUS="amd-rocm6.1"
+    else
+      msg "ROCm ${ROCM_VER} is older than 6.0 — falling back to CPU PyTorch."
+      msg "Update ROCm for GPU acceleration: https://rocm.docs.amd.com/"
+    fi
+  else
+    # ROCm tools found but version unknown — try the latest stable index
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.2.4"
+    GPU_STATUS="amd-rocm-auto"
+  fi
+else
+  msg "No GPU detected. Embedding generation will use CPU (still works fine)."
+fi
+
+# Install GPU-accelerated PyTorch if a compatible GPU was found.
+# Skip if the correct build is already present to avoid re-downloading on every run.
+if [[ -n "${TORCH_INDEX_URL}" ]]; then
+  WANTED_BUILD="${TORCH_INDEX_URL##*/}"  # e.g. "cu128"
+  EXISTING_BUILD=$(cd "${PROJECT_DIR}" && uv run python -c \
+    "import torch; v=torch.__version__; print(v.split('+')[-1] if '+' in v else 'cpu')" \
+    2>/dev/null || echo "none")
+
+  if [[ "${EXISTING_BUILD}" == "${WANTED_BUILD}" ]]; then
+    msg "GPU-accelerated PyTorch (${WANTED_BUILD}) already installed — skipping."
+  else
+    msg "Installing GPU-accelerated PyTorch (${GPU_STATUS})..."
+    if (cd "${PROJECT_DIR}" && uv pip install torch --index-url "${TORCH_INDEX_URL}" --reinstall --quiet 2>&1); then
+      msg "GPU-accelerated PyTorch installed successfully."
+    else
+      printf "${YELLOW}⚠ GPU PyTorch installation failed — falling back to CPU.${NC}\n"
+      printf "  You can retry later: uv pip install torch --index-url %s --reinstall\n" "${TORCH_INDEX_URL}"
+      GPU_STATUS="cpu-fallback"
+    fi
+  fi
+elif [[ "${GPU_VENDOR}" == "mps" ]]; then
+  msg "Apple Silicon MPS: standard PyTorch build includes MPS support — no extra install needed."
 fi
 
 msg "Downloading embedding model to ${STORAGE_DIR}"
@@ -202,6 +339,7 @@ printf "  Storage: %s\n\n" "${STORAGE_DIR}"
 printf "${BOLD}Final status summary:${NC}\n"
 printf "  Repo installed/updated: %s\n" "${REPO_STATUS}"
 printf "  Dependencies installed: %s\n" "${DEPS_STATUS}"
+printf "  GPU acceleration: %s\n" "${GPU_STATUS}"
 printf "  Model downloaded: %s\n" "${MODEL_STATUS}"
 printf "  Reranker downloaded: %s\n" "${RERANKER_STATUS}"
 printf "  Ready for indexing: %s\n\n" "${READY_STATUS}"
@@ -211,17 +349,23 @@ if [[ "${STASHED_CHANGES}" == "1" ]]; then
   printf "  Inspect with: git -C %s stash list\n\n" "${PROJECT_DIR}"
 fi
 
+printf "${BOLD}MCP server command:${NC}\n"
+printf "  uv run --directory %s python mcp_server/server.py\n\n" "${PROJECT_DIR}"
+printf "  If installed via PyPI: agent-context-local-mcp\n\n"
+
 if [[ "${IS_UPDATE}" -eq 1 ]]; then
-  printf "${YELLOW}Recommended after update:${NC}\n"
+  printf "${YELLOW}Recommended after update (Claude Code):${NC}\n"
   printf "  1) claude mcp remove code-search\n"
   printf "  2) claude mcp add code-search --scope user -- uv run --directory %s python mcp_server/server.py\n" "${PROJECT_DIR}"
   printf "  3) claude mcp list\n\n"
 else
-  printf "${BOLD}Next steps:${NC}\n"
+  printf "${BOLD}Next steps (Claude Code):${NC}\n"
   printf "  1) claude mcp add code-search --scope user -- uv run --directory %s python mcp_server/server.py\n" "${PROJECT_DIR}"
   printf "  2) claude mcp list\n"
   printf "  3) In Claude Code: index this codebase\n\n"
 fi
+printf "  For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.):\n"
+printf "  uv run --directory %s python scripts/cli.py setup-mcp\n\n" "${PROJECT_DIR}"
 
 printf "${YELLOW}Notes:${NC}\n"
 printf "%s\n" "• Selected embedding model: ${MODEL_NAME}"

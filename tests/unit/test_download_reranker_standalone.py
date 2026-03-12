@@ -240,7 +240,7 @@ class TestDownloadRerankerFailure:
 # ---------------------------------------------------------------------------
 
 class TestDefaultStorageDir:
-    """When storage_dir is None, the script must default to ~/.claude_code_search."""
+    """When storage_dir is None, the script must default to ~/.agent_code_search."""
 
     def test_default_storage_dir_uses_home(self, download_module, tmp_path):
         mock_tok = MagicMock()

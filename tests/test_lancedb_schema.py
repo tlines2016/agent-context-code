@@ -335,7 +335,7 @@ class TestLanceDBLocalStorage:
     Storage philosophy
     ------------------
     All index data (vectors, metadata) is stored in a **centralised**
-    directory (``~/.claude_code_search/`` by default, configurable via
+    directory (``~/.agent_code_search/`` by default, configurable via
     ``CODE_SEARCH_STORAGE``).  The user's project workspace is NEVER
     polluted with database files.  This mirrors the existing architecture
     where ``common_utils.get_storage_dir()`` returns the base path and
@@ -393,7 +393,7 @@ class TestLanceDBLocalStorage:
         under a dedicated storage directory, NOT inside the user's project.
 
         This simulates how ``CodeIndexManager`` works at runtime:
-            1. ``get_storage_dir()`` returns ``~/.claude_code_search/``
+            1. ``get_storage_dir()`` returns ``~/.agent_code_search/``
             2. The project DB is at
                ``<storage>/projects/<name>_<hash>/index/lancedb/``
             3. The user's actual project directory has ZERO database files
@@ -413,7 +413,7 @@ class TestLanceDBLocalStorage:
         (workspace / "main.py").write_text("print('hello')")
 
         # Simulate the centralised storage location (managed by us).
-        storage = tmp_path / "claude_code_search" / "projects" / "my_project_abc123"
+        storage = tmp_path / "agent_code_search" / "projects" / "my_project_abc123"
         lance_dir = storage / "lancedb"
         lance_dir.mkdir(parents=True)
 

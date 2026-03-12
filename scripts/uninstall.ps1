@@ -5,7 +5,7 @@
 .DESCRIPTION
     This script removes AGENT Context Local artifacts:
       - App checkout directory (default: %LOCALAPPDATA%\agent-context-code)
-      - Storage root with indexes, models, and config (default: %USERPROFILE%\.claude_code_search)
+      - Storage root with indexes, models, and config (default: %USERPROFILE%\.agent_code_search)
       - MCP server registration (code-search)
 
     Shared prerequisites (uv, Python, git) are intentionally NOT removed.
@@ -16,7 +16,7 @@
 
 .PARAMETER StorageDir
     Path to the storage root (indexes, models, config).
-    Default: CODE_SEARCH_STORAGE env var, or $env:USERPROFILE\.claude_code_search
+    Default: CODE_SEARCH_STORAGE env var, or $env:USERPROFILE\.agent_code_search
 
 .PARAMETER Force
     Skip interactive confirmation and proceed immediately.
@@ -29,7 +29,7 @@
 #>
 param(
     [string]$ProjectDir = "$env:LOCALAPPDATA\agent-context-code",
-    [string]$StorageDir = $(if ($env:CODE_SEARCH_STORAGE) { $env:CODE_SEARCH_STORAGE } else { "$env:USERPROFILE\.claude_code_search" }),
+    [string]$StorageDir = $(if ($env:CODE_SEARCH_STORAGE) { $env:CODE_SEARCH_STORAGE } else { "$env:USERPROFILE\.agent_code_search" }),
     [switch]$Force,
     [switch]$SkipMcpRemove,
     [switch]$WhatIf
@@ -105,7 +105,8 @@ function Test-ProjectPathSignature {
 function Test-StoragePathSignature {
     param([string]$Path)
     # Accept the canonical storage root name or marker files/dirs used by this product.
-    if ([System.IO.Path]::GetFileName($Path).ToLowerInvariant() -eq ".claude_code_search") {
+    $leaf = [System.IO.Path]::GetFileName($Path).ToLowerInvariant()
+    if ($leaf -eq ".agent_code_search" -or $leaf -eq ".claude_code_search") {
         return $true
     }
 

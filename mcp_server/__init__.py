@@ -1,1 +1,1 @@
-"""MCP server for Claude Code integration."""
+"""MCP server for AI coding assistant integration."""

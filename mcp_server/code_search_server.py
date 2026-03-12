@@ -7,7 +7,6 @@ inheritance) are available for graph-enriched search results.
 """
 
 import os
-import sys
 import json
 import asyncio
 import logging
@@ -16,10 +15,12 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from functools import lru_cache
 
-# Add the parent directory to the path so we can import our modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from common_utils import get_storage_dir, load_reranker_config
+try:
+    from common_utils import get_storage_dir, load_reranker_config
+except ImportError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import get_storage_dir, load_reranker_config
 from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager
@@ -44,32 +45,71 @@ class CodeSearchServer:
         self._searcher: Optional[IntelligentSearcher] = None
         self._current_project: Optional[str] = None
         self._code_graph: Optional[CodeGraph] = None
+        self._code_graph_project: Optional[str] = None
 
-    def get_project_storage_dir(self, project_path: str) -> Path:
-        """Get or create project-specific storage directory."""
-        base_dir = get_storage_dir()
+    def _graph_db_path(self, project_path: str, ensure_parent: bool = True) -> Path:
+        """Return the per-project SQLite graph path."""
+        project_dir = self._project_storage_dir(project_path, create_if_missing=ensure_parent)
+        graph_path = project_dir / "index" / "code_graph.db"
+        if ensure_parent:
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+        return graph_path
+
+    @staticmethod
+    def _project_storage_key(project_path: str) -> tuple[Path, str, str]:
+        """Derive normalized project identity used for per-project storage."""
         project_path_obj = Path(project_path).resolve()
         project_name = project_path_obj.name
         import hashlib
         project_hash = hashlib.md5(str(project_path_obj).encode()).hexdigest()[:8]
+        return project_path_obj, project_name, project_hash
 
-        # Use common utils for base directory
+    def _project_storage_dir(self, project_path: str, create_if_missing: bool = True) -> Path:
+        """Return per-project storage dir; optionally avoid any filesystem writes."""
+        base_dir = get_storage_dir()
+        project_path_obj, project_name, project_hash = self._project_storage_key(project_path)
         project_dir = base_dir / "projects" / f"{project_name}_{project_hash}"
-        project_dir.mkdir(parents=True, exist_ok=True)
 
-        # Store project info
-        project_info_file = project_dir / "project_info.json"
-        if not project_info_file.exists():
-            project_info = {
-                "project_name": project_name,
-                "project_path": str(project_path_obj),
-                "project_hash": project_hash,
-                "created_at": datetime.now().isoformat()
-            }
-            with open(project_info_file, 'w') as f:
-                json.dump(project_info, f, indent=2)
-
+        if create_if_missing:
+            project_dir.mkdir(parents=True, exist_ok=True)
+            # Persist project info for operator visibility and debugging.
+            project_info_file = project_dir / "project_info.json"
+            if not project_info_file.exists():
+                project_info = {
+                    "project_name": project_name,
+                    "project_path": str(project_path_obj),
+                    "project_hash": project_hash,
+                    "created_at": datetime.now().isoformat()
+                }
+                with open(project_info_file, 'w') as f:
+                    json.dump(project_info, f, indent=2)
         return project_dir
+
+    def _close_cached_graph(self) -> None:
+        """Close and clear cached graph connection safely."""
+        if self._code_graph is not None:
+            try:
+                self._code_graph.close()
+            except Exception as exc:
+                logger.warning("Failed to close cached code graph: %s", exc)
+        self._code_graph = None
+        self._code_graph_project = None
+
+    def _open_transient_graph(self, project_path: str, create_if_missing: bool = True) -> Optional[CodeGraph]:
+        """Open a short-lived graph connection for cross-project calls.
+
+        When *create_if_missing* is False, returns None if the graph DB
+        file does not exist — this avoids creating ghost state on read-only
+        lookups.
+        """
+        graph_path = self._graph_db_path(project_path, ensure_parent=create_if_missing)
+        if not create_if_missing and not graph_path.exists():
+            return None
+        return CodeGraph(str(graph_path))
+
+    def get_project_storage_dir(self, project_path: str) -> Path:
+        """Get or create project-specific storage directory."""
+        return self._project_storage_dir(project_path, create_if_missing=True)
 
     def ensure_project_indexed(self, project_path: str) -> bool:
         """Check if project is indexed, auto-index if needed."""
@@ -211,18 +251,24 @@ class CodeSearchServer:
         The graph database lives alongside the LanceDB index in the
         project storage directory (``index/code_graph.db``).
         """
-        project_dir = self.get_project_storage_dir(project_path)
-        graph_path = project_dir / "index" / "code_graph.db"
-        graph_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._code_graph is None or self._current_project != project_path:
+        project_path = str(Path(project_path).resolve())
+        graph_path = self._graph_db_path(project_path)
+
+        if self._code_graph is not None and self._code_graph_project != project_path:
+            # Rebinding to a different project must close the old SQLite
+            # handle first to avoid accumulating file handles over time.
+            self._close_cached_graph()
+
+        if self._code_graph is None:
             self._code_graph = CodeGraph(str(graph_path))
+            self._code_graph_project = project_path
+
         return self._code_graph
 
     def search_code(
         self,
         query: str,
         k: int = 5,
-        search_mode: str = "auto",
         file_pattern: str = None,
         chunk_type: str = None,
         include_context: bool = True,
@@ -244,7 +290,7 @@ class CodeSearchServer:
                     "suggestion": "Use a smaller value for k, e.g. search_code('query', k=10)."
                 })
 
-            logger.info(f"🔍 MCP REQUEST: search_code(query='{query}', k={k}, mode='{search_mode}', file_pattern={file_pattern}, chunk_type={chunk_type}, project_path={project_path})")
+            logger.info(f"🔍 MCP REQUEST: search_code(query='{query}', k={k}, file_pattern={file_pattern}, chunk_type={chunk_type}, project_path={project_path})")
 
             # ── Cross-project search ─────────────────────────────────────────
             # When ``project_path`` is provided the search targets that project
@@ -255,7 +301,6 @@ class CodeSearchServer:
                     query=query,
                     project_path=str(Path(project_path).resolve()),
                     k=k,
-                    search_mode=search_mode,
                     file_pattern=file_pattern,
                     chunk_type=chunk_type,
                     include_context=include_context,
@@ -302,11 +347,10 @@ class CodeSearchServer:
             logger.info(f"Search filters: {filters}")
 
             context_depth = 1 if include_context else 0
-            logger.info(f"Calling searcher.search with query='{query}', k={k}, mode={search_mode}")
+            logger.info(f"Calling searcher.search with query='{query}', k={k}")
             results = searcher.search(
                 query=query,
                 k=k,
-                search_mode=search_mode,
                 context_depth=context_depth,
                 filters=filters if filters else None
             )
@@ -315,26 +359,18 @@ class CodeSearchServer:
             formatted_results = [self._format_result(r) for r in results]
 
             # Enrich results with graph relationships when available.
+            graph_enriched = False
             if self._code_graph is not None and include_context:
-                for item, result in zip(formatted_results, results):
-                    try:
-                        rels = self._code_graph.get_relationships(result.chunk_id)
-                        if rels:
-                            item['relationships'] = [
-                                {
-                                    'type': r['edge_type'],
-                                    'target': r['target_chunk_id'] if r['source_chunk_id'] == result.chunk_id else r['source_chunk_id'],
-                                    'direction': 'outgoing' if r['source_chunk_id'] == result.chunk_id else 'incoming',
-                                }
-                                for r in rels[:10]  # Cap to keep payload reasonable
-                            ]
-                    except Exception as exc:
-                        logger.debug("Graph enrichment skipped for %s: %s", result.chunk_id, exc)
+                graph_enriched = self._enrich_results_with_graph(
+                    self._code_graph, formatted_results, results,
+                )
 
-            response = {
+            response: dict = {
                 'query': query,
-                'results': formatted_results
+                'results': formatted_results,
             }
+            if graph_enriched:
+                response['graph_enriched'] = True
 
             return json.dumps(response, separators=(",", ":"))
         except Exception as e:
@@ -376,12 +412,42 @@ class CodeSearchServer:
                 return (snippet[:157] + '...') if len(snippet) > 160 else snippet
         return ""
 
+    @staticmethod
+    def _enrich_results_with_graph(
+        graph: "CodeGraph",
+        formatted_results: List[dict],
+        raw_results: list,
+        max_relationships: int = 10,
+    ) -> bool:
+        """Add bounded graph relationship hints to formatted search results.
+
+        Only top-N candidates (all of them, bounded by the search k) are
+        enriched.  Returns True if at least one result was enriched.
+        """
+        enriched_any = False
+        for item, result in zip(formatted_results, raw_results):
+            try:
+                chunk_id = result.chunk_id if hasattr(result, "chunk_id") else item.get("chunk_id", "")
+                rels = graph.get_relationships(chunk_id)
+                if rels:
+                    item['relationships'] = [
+                        {
+                            'type': r['edge_type'],
+                            'target': r['target_chunk_id'] if r['source_chunk_id'] == chunk_id else r['source_chunk_id'],
+                            'direction': 'outgoing' if r['source_chunk_id'] == chunk_id else 'incoming',
+                        }
+                        for r in rels[:max_relationships]
+                    ]
+                    enriched_any = True
+            except Exception as exc:
+                logger.debug("Graph enrichment skipped for %s: %s", getattr(result, "chunk_id", "?"), exc)
+        return enriched_any
+
     def _search_project(
         self,
         query: str,
         project_path: str,
         k: int = 5,
-        search_mode: str = "auto",
         file_pattern: str = None,
         chunk_type: str = None,
         include_context: bool = True,
@@ -397,9 +463,13 @@ class CodeSearchServer:
         # These local objects are garbage-collected when the method returns —
         # they are never assigned to self, so the caller's active project
         # state (_current_project / _index_manager / _searcher) is untouched.
-        project_dir = self.get_project_storage_dir(project_path)
+        project_dir = self._project_storage_dir(project_path, create_if_missing=False)
         index_dir = project_dir / "index"
-        index_dir.mkdir(exist_ok=True)
+        if not index_dir.exists():
+            return json.dumps({
+                "error": f"Project not indexed: {project_path}",
+                "suggestion": f"Run index_directory('{project_path}') first, then retry."
+            })
         # CodeIndexManager is instantiated inline (not via get_index_manager)
         # intentionally: get_index_manager mutates self._current_project, which
         # would defeat the purpose of a context-free cross-project search.
@@ -432,18 +502,34 @@ class CodeSearchServer:
         results = target_searcher.search(
             query=query,
             k=k,
-            search_mode=search_mode,
             context_depth=context_depth,
             filters=filters if filters else None,
         )
 
         formatted_results = [self._format_result(r) for r in results]
 
-        return json.dumps({
+        # Enrich with graph relationships when a graph exists for the
+        # target project (read-only — never creates a graph DB).
+        graph_enriched = False
+        if include_context:
+            graph = self._open_transient_graph(project_path, create_if_missing=False)
+            if graph is not None:
+                try:
+                    graph_enriched = self._enrich_results_with_graph(
+                        graph, formatted_results, results,
+                    )
+                finally:
+                    graph.close()
+
+        response: dict = {
             'query': query,
             'project': project_path,
             'results': formatted_results,
-        }, separators=(",", ":"))
+        }
+        if graph_enriched:
+            response['graph_enriched'] = True
+
+        return json.dumps(response, separators=(",", ":"))
 
     def index_directory(
         self,
@@ -502,7 +588,7 @@ class CodeSearchServer:
                 "success": result.success,
                 "directory": str(directory_path),
                 "project_name": project_name,
-                "incremental": incremental and result.files_modified > 0,
+                "incremental": incremental,
                 "files_added": result.files_added,
                 "files_removed": result.files_removed,
                 "files_modified": result.files_modified,
@@ -553,13 +639,21 @@ class CodeSearchServer:
         except Exception as e:
             error_msg = f"Similar code search failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return json.dumps({"error": error_msg})
+            return json.dumps({"error": error_msg, "suggestion": "Verify the chunk_id is from a recent search_code result. The chunk may have been removed during re-indexing."})
 
     def get_index_status(self) -> str:
         """Implementation of get_index_status tool.
 
         Returns index statistics including storage health metrics:
         version_count, storage_size_mb (from LanceDB table stats).
+
+        Additive sync observability fields:
+        - ``vector_indexed``: whether the LanceDB table has data.
+        - ``graph_indexed``: whether the graph DB exists and has symbols.
+        - ``snapshot_exists``: whether a Merkle snapshot exists.
+        - ``sync_status``: ``"synced"`` when all three stores agree,
+          ``"degraded"`` when at least one is missing or inconsistent.
+        - ``degraded_reason``: human-readable reason when degraded.
         """
         try:
             index_manager = self.get_index_manager()
@@ -573,12 +667,92 @@ class CodeSearchServer:
                 "storage_directory": str(get_storage_dir()),
             }
 
-            # Include graph statistics when a graph exists.
-            if self._code_graph is not None:
+            # ── Sync observability ──────────────────────────────────────
+            vector_indexed = stats.get("total_chunks", 0) > 0
+            graph_indexed = False
+            snapshot_exists = False
+            degraded_reasons: list = []
+
+            # Include graph statistics for the active project when available.
+            if self._current_project is not None:
                 try:
-                    response["graph_statistics"] = self._code_graph.get_stats()
+                    active_project = str(Path(self._current_project).resolve())
+
+                    if (
+                        self._code_graph is not None
+                        and self._code_graph_project == active_project
+                    ):
+                        gstats = self._code_graph.get_stats()
+                        response["graph_statistics"] = gstats
+                        graph_indexed = gstats.get("total_symbols", 0) > 0
+                    else:
+                        graph_path = self._graph_db_path(active_project, ensure_parent=False)
+                        if graph_path.exists():
+                            transient_graph = CodeGraph(str(graph_path))
+                            try:
+                                gstats = transient_graph.get_stats()
+                                response["graph_statistics"] = gstats
+                                graph_indexed = gstats.get("total_symbols", 0) > 0
+                            finally:
+                                transient_graph.close()
                 except Exception:
                     pass
+
+                # Check snapshot existence + revision metadata
+                snapshot_metadata: Optional[dict] = None
+                snapshot_metadata_read_ok = True
+                try:
+                    from merkle.snapshot_manager import SnapshotManager
+                    sm = SnapshotManager()
+                    snapshot_exists = sm.has_snapshot(self._current_project)
+                    if snapshot_exists:
+                        loaded_metadata = sm.load_metadata(self._current_project)
+                        snapshot_metadata = loaded_metadata if isinstance(loaded_metadata, dict) else {}
+                except Exception:
+                    snapshot_metadata_read_ok = False
+
+                if vector_indexed and not graph_indexed:
+                    degraded_reasons.append("graph not indexed or empty")
+                if vector_indexed and not snapshot_exists:
+                    degraded_reasons.append("snapshot metadata missing")
+                if snapshot_exists and not snapshot_metadata_read_ok:
+                    degraded_reasons.append("snapshot metadata unreadable")
+
+                # Add explicit revision/timestamp observability for all stores.
+                revision_info: dict = {
+                    "vector": {
+                        "version_count": stats.get("version_count"),
+                        "total_chunks": stats.get("total_chunks"),
+                    },
+                    "graph": {
+                        "indexed": graph_indexed,
+                    },
+                    "snapshot": {
+                        "exists": snapshot_exists,
+                    },
+                }
+                try:
+                    graph_path = self._graph_db_path(active_project, ensure_parent=False)
+                    if graph_path.exists():
+                        revision_info["graph"]["db_path"] = str(graph_path)
+                        revision_info["graph"]["last_updated"] = datetime.fromtimestamp(
+                            graph_path.stat().st_mtime
+                        ).isoformat()
+                except Exception:
+                    pass
+                if snapshot_metadata:
+                    revision_info["snapshot"]["last_snapshot"] = snapshot_metadata.get("last_snapshot")
+                    revision_info["snapshot"]["root_hash"] = snapshot_metadata.get("root_hash")
+                    revision_info["snapshot"]["file_count"] = snapshot_metadata.get("file_count")
+                response["revision_observability"] = revision_info
+
+            sync_status = "synced" if not degraded_reasons else "degraded"
+            response["sync_status"] = sync_status
+            response["vector_indexed"] = vector_indexed
+            response["graph_indexed"] = graph_indexed
+            response["snapshot_exists"] = snapshot_exists
+            if degraded_reasons:
+                response["degraded_reason"] = "; ".join(degraded_reasons)
 
             # Include reranker status
             reranker = self.reranker()
@@ -596,7 +770,7 @@ class CodeSearchServer:
         except Exception as e:
             error_msg = f"Status check failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return json.dumps({"error": error_msg})
+            return json.dumps({"error": error_msg, "suggestion": "Check that a project is indexed and active. Use index_directory() if needed."})
 
     def list_projects(self) -> str:
         """Implementation of list_projects tool."""
@@ -634,14 +808,14 @@ class CodeSearchServer:
             }, indent=2)
         except Exception as e:
             logger.error(f"Error listing projects: {e}")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": str(e), "suggestion": "Try index_directory() to create a project, then list_projects() to verify."})
 
     def switch_project(self, project_path: str) -> str:
         """Implementation of switch_project tool."""
         try:
             project_path = Path(project_path).resolve()
             if not project_path.exists():
-                return json.dumps({"error": f"Project path does not exist: {project_path}"})
+                return json.dumps({"error": f"Project path does not exist: {project_path}", "suggestion": "Verify the path is correct. Use list_projects() to see indexed projects."})
 
             project_dir = self.get_project_storage_dir(str(project_path))
             index_dir = project_dir / "index"
@@ -661,7 +835,7 @@ class CodeSearchServer:
             self._index_manager = None
             self._searcher = None
             # Reset graph so it's re-loaded for the new project.
-            self._code_graph = None
+            self._close_cached_graph()
 
             info_file = project_dir / "project_info.json"
             project_info = {}
@@ -678,7 +852,7 @@ class CodeSearchServer:
             })
         except Exception as e:
             logger.error(f"Error switching project: {e}")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": str(e), "suggestion": "Verify the path exists and is indexed. Use list_projects() to see available projects."})
 
     def index_test_project(self) -> str:
         """Implementation of index_test_project tool."""
@@ -691,7 +865,8 @@ class CodeSearchServer:
             if not test_project_path.exists():
                 return json.dumps({
                     "success": False,
-                    "error": "Test project not found. The sample project may not be available."
+                    "error": "Test project not found. The sample project may not be available.",
+                    "suggestion": "Ensure the repository is fully cloned. The tests/test_data/python_project directory may be missing."
                 })
 
             result = self.index_directory(str(test_project_path))
@@ -725,34 +900,87 @@ class CodeSearchServer:
 
     def clear_index(self) -> str:
         """Implementation of clear_index tool.
-        
-        Also clears the relational graph when present.
+
+        Clears the vector index, relational graph, and Merkle snapshot
+        metadata.  Returns truthful per-store outcomes so callers can
+        distinguish partial from full resets.
         """
         try:
             if self._current_project is None:
-                return json.dumps({"error": "No project is currently active. Use index_directory() to index a project first."})
+                return json.dumps({"error": "No project is currently active.", "suggestion": "Use index_directory() to index a project first."})
 
-            index_manager = self.get_index_manager()
-            index_manager.clear_index()
+            vector_cleared = False
+            graph_cleared = False
+            snapshot_cleared = False
 
-            # Clear the relational graph alongside the vector index.
-            if self._code_graph is not None:
-                try:
-                    self._code_graph.clear()
-                except Exception as exc:
-                    logger.warning("Failed to clear code graph: %s", exc)
+            # ── 1. Close cached graph handle first (Windows-safe ordering)
+            # The graph DB file cannot be deleted while an open SQLite
+            # connection holds a file handle on it.
+            self._close_cached_graph()
+
+            # ── 2. Clear the vector index
+            try:
+                index_manager = self.get_index_manager()
+                index_manager.clear_index()
+                vector_cleared = True
+            except Exception as exc:
+                logger.warning("Failed to clear vector index: %s", exc)
+
+            # ── 3. Clear the relational graph
+            try:
+                graph_path = self._graph_db_path(self._current_project, ensure_parent=False)
+                if graph_path.exists():
+                    # Open, clear contents, then close.
+                    graph = CodeGraph(str(graph_path))
+                    try:
+                        graph.clear()
+                        graph_cleared = True
+                    finally:
+                        graph.close()
+                    # Also delete the DB file itself for a truly clean slate.
+                    try:
+                        graph_path.unlink()
+                    except Exception:
+                        pass  # clear() succeeded; file deletion is best-effort
+                else:
+                    # No graph DB means nothing to clear — not a failure.
+                    graph_cleared = True
+            except Exception as exc:
+                logger.warning("Failed to clear code graph: %s", exc)
+
+            # ── 4. Clear Merkle snapshot metadata
+            from merkle.snapshot_manager import SnapshotManager
+
+            try:
+                SnapshotManager().delete_snapshot(self._current_project)
+                snapshot_cleared = True
+            except Exception as exc:
+                logger.warning("Failed to delete project snapshot metadata: %s", exc)
+
+            # ── 5. Reset server-local cached state
+            self._index_manager = None
+            self._searcher = None
+
+            # success is True only when all required stores are cleared.
+            all_cleared = vector_cleared and graph_cleared and snapshot_cleared
 
             response = {
-                "success": True,
-                "message": "Search index cleared successfully"
+                "success": all_cleared,
+                "message": "Search index cleared successfully" if all_cleared else "Partial clear — see per-store flags",
+                "vector_cleared": vector_cleared,
+                "graph_cleared": graph_cleared,
+                "snapshot_cleared": snapshot_cleared,
             }
 
-            logger.info("Search index cleared")
+            logger.info(
+                "clear_index: vector=%s graph=%s snapshot=%s",
+                vector_cleared, graph_cleared, snapshot_cleared,
+            )
             return json.dumps(response, indent=2)
         except Exception as e:
             error_msg = f"Clear index failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return json.dumps({"error": error_msg})
+            return json.dumps({"error": error_msg, "suggestion": "Ensure a project is active. Use get_index_status() to check the current state."})
 
     def get_graph_context(
         self,
@@ -765,7 +993,8 @@ class CodeSearchServer:
         Returns the connected sub-graph (symbols and edges) within
         *max_depth* hops of the given *chunk_id*.  Useful for
         understanding how a search result connects to the rest of the
-        codebase (callers, callees, parent classes, importers, etc.).
+        codebase (containment and inheritance relationships, plus other
+        edge types when available).
 
         Parameters
         ----------
@@ -781,13 +1010,72 @@ class CodeSearchServer:
             if target_path is None:
                 return json.dumps({
                     "error": "No project is active. Index a directory first.",
+                    "suggestion": "Run index_directory('/path/to/project') to index and activate a project."
                 })
 
-            graph = self.get_code_graph(target_path)
-            subgraph = graph.get_connected_subgraph(chunk_id, max_depth=max_depth)
+            if type(max_depth) is not int:
+                return json.dumps({
+                    "error": f"max_depth must be a non-negative integer (got {type(max_depth).__name__}).",
+                    "suggestion": "Pass a small integer, e.g. max_depth=2. Recommended range: 0–3."
+                })
+            if max_depth < 0:
+                return json.dumps({
+                    "error": f"max_depth must be >= 0 (got {max_depth}).",
+                    "suggestion": "Pass a small non-negative integer, e.g. max_depth=2. Recommended range: 0–3."
+                })
+
+            target_path = str(Path(target_path).resolve())
+            active_path = (
+                str(Path(self._current_project).resolve())
+                if self._current_project is not None
+                else None
+            )
+            use_transient_graph = project_path is not None and target_path != active_path
+
+            # For cross-project lookups, do NOT create the graph DB when
+            # it is absent — return an explicit "not indexed" error instead.
+            if use_transient_graph:
+                graph = self._open_transient_graph(target_path, create_if_missing=False)
+                if graph is None:
+                    return json.dumps({
+                        "error": "Project graph not indexed",
+                        "chunk_id": chunk_id,
+                        "suggestion": "Run index_directory() on this project to build the graph. Graph data is created during indexing."
+                    })
+            else:
+                # Active project: check if graph DB exists before creating it.
+                graph_path = self._graph_db_path(target_path, ensure_parent=False)
+                if not graph_path.exists():
+                    return json.dumps({
+                        "error": "Project graph not indexed",
+                        "chunk_id": chunk_id,
+                        "suggestion": "Run index_directory() on this project to build the graph. Graph data is created during indexing."
+                    })
+                graph = self.get_code_graph(target_path)
+
+            try:
+                # ── Missing-seed semantics ──────────────────────────────
+                # Differentiate "chunk not found" from "chunk with no edges".
+                seed_symbol = graph.get_symbol(chunk_id)
+                if seed_symbol is None:
+                    return json.dumps({
+                        "chunk_id": chunk_id,
+                        "found": False,
+                        "miss_reason": "Chunk not found in graph",
+                        "symbols": [],
+                        "edges": [],
+                        "symbol_count": 0,
+                        "edge_count": 0,
+                    }, indent=2)
+
+                subgraph = graph.get_connected_subgraph(chunk_id, max_depth=max_depth)
+            finally:
+                if use_transient_graph:
+                    graph.close()
 
             return json.dumps({
                 "chunk_id": chunk_id,
+                "found": True,
                 "max_depth": max_depth,
                 "symbols": subgraph["symbols"],
                 "edges": subgraph["edges"],
@@ -798,4 +1086,4 @@ class CodeSearchServer:
         except Exception as e:
             error_msg = f"Graph context lookup failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return json.dumps({"error": error_msg})
+            return json.dumps({"error": error_msg, "suggestion": "Verify the chunk_id is valid and the project is indexed. Use search_code() to get valid chunk_ids."})

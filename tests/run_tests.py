@@ -17,7 +17,7 @@ def run_pytest(args_list):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test runner for Claude Code Embedding Search"
+        description="Test runner for AGENT Context Local"
     )
     
     # Test selection options

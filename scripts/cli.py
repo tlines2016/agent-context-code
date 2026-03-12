@@ -35,19 +35,38 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# Add the parent directory to the path so we can import our modules
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from common_utils import (
-    VERSION,
-    get_storage_dir,
-    load_local_install_config,
-    load_reranker_config,
-    save_reranker_config,
-)
+try:
+    from common_utils import (
+        VERSION,
+        is_installed_package,
+        get_storage_dir,
+        load_local_install_config,
+        save_local_install_config,
+        load_reranker_config,
+        save_reranker_config,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import (
+        VERSION,
+        is_installed_package,
+        get_storage_dir,
+        load_local_install_config,
+        save_local_install_config,
+        load_reranker_config,
+        save_reranker_config,
+    )
 
 INSTALL_SH_URL = "https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.sh"
 INSTALL_PS1_URL = "https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/install.ps1"
+
+# Lazy import — embeddings package may not be importable when venv is incomplete
+# (e.g. first run of `doctor` before `uv sync`).  The fallback keeps setup-guide
+# and troubleshoot functional even without a complete environment.
+try:
+    from embeddings.model_catalog import DEFAULT_EMBEDDING_MODEL as _DEFAULT_EMBEDDING_MODEL
+except ImportError:
+    _DEFAULT_EMBEDDING_MODEL = "mixedbread-ai/mxbai-embed-xsmall-v1"
 
 # Models that require a HuggingFace account, license acceptance, and auth
 # token to download. Referenced by setup-guide and models sub-commands.
@@ -135,6 +154,26 @@ def get_platform_label() -> str:
     return {"Windows": "Windows", "Darwin": "macOS", "Linux": "Linux"}.get(system, system)
 
 
+def _cmd_prefix() -> str:
+    """CLI command prefix appropriate for install mode."""
+    if is_installed_package() and shutil.which("agent-context-local"):
+        return "agent-context-local"
+    install_dir = get_default_install_dir()
+    if is_windows():
+        return f'uv run --directory "{install_dir}" python scripts/cli.py'
+    return f"uv run --directory {install_dir} python scripts/cli.py"
+
+
+def _mcp_server_cmd() -> str:
+    """MCP server command appropriate for install mode."""
+    if is_installed_package() and shutil.which("agent-context-local-mcp"):
+        return "agent-context-local-mcp"
+    install_dir = get_default_install_dir()
+    if is_windows():
+        return f'uv run --directory "{install_dir}" python mcp_server/server.py'
+    return f"uv run --directory {install_dir} python mcp_server/server.py"
+
+
 def get_default_install_dir() -> Path:
     """Return the expected installation directory for this platform.
 
@@ -208,33 +247,62 @@ def _detect_gpu_info() -> str:
     except ImportError:
         return "unknown (torch not importable)"
 
+    build = torch.__version__  # e.g. "2.10.0+cu128" or "2.10.0+cpu"
+    build_suffix = build.split("+")[-1] if "+" in build else "unknown"
+
     if torch.cuda.is_available():
         # Check if this is ROCm (AMD) or NVIDIA CUDA
         if hasattr(torch.version, "hip") and torch.version.hip:
             device_name = torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else "unknown"
-            return f"AMD ROCm ({device_name})"
+            return f"AMD ROCm ({device_name}, torch+{build_suffix})"
         else:
             device_name = torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else "unknown"
-            return f"NVIDIA CUDA ({device_name})"
+            return f"NVIDIA CUDA ({device_name}, torch+{build_suffix})"
     try:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "Apple MPS"
+            return f"Apple MPS (torch+{build_suffix})"
     except Exception:
         pass
-    return "CPU only"
+
+    # CPU-only — check if a GPU exists but wrong PyTorch build is installed
+    if build_suffix == "cpu":
+        hw_hint = _detect_gpu_hardware_without_torch()
+        if hw_hint:
+            return f"CPU only (torch+cpu) — {hw_hint} detected but PyTorch lacks GPU support. Run: {_cmd_prefix()} gpu-setup"
+    return f"CPU only (torch+{build_suffix})"
+
+
+def _detect_gpu_hardware_without_torch() -> str:
+    """Detect GPU hardware without relying on PyTorch — uses system tools."""
+    # NVIDIA
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return f"NVIDIA {result.stdout.strip().splitlines()[0]}"
+        except Exception:
+            return "NVIDIA GPU"
+    # AMD (Linux/Windows)
+    if shutil.which("rocm-smi") or shutil.which("rocminfo"):
+        return "AMD GPU (ROCm)"
+    return ""
 
 
 # ── Sub-commands ──────────────────────────────────────────────────────
 
 def cmd_help() -> None:
     """Print the main help message listing available commands and examples."""
-    install_dir = get_default_install_dir()
+    prefix = _cmd_prefix()
+    mcp_cmd = _mcp_server_cmd()
 
     print(bold("AGENT Context Local (compat: Claude Context Local)") + f"  v{VERSION}")
-    print("Local semantic code search for Claude Code via MCP.\n")
+    print("Local semantic code search for AI coding assistants via MCP.\n")
 
     print(bold("USAGE"))
-    print(f"  python scripts/cli.py {cyan('<command>')}\n")
+    print(f"  {prefix} {cyan('<command>')}\n")
 
     print(bold("COMMANDS"))
     cmds = [
@@ -244,33 +312,33 @@ def cmd_help() -> None:
         ("status", "Show index statistics and active project info"),
         ("paths", "Show all paths used by the tool"),
         ("setup-guide", "Print step-by-step setup instructions for your OS"),
+        ("setup-mcp", "MCP registration instructions for all supported clients"),
+        ("gpu-setup", "Detect GPU and install matching PyTorch build"),
         ("troubleshoot", "HuggingFace auth & model download help"),
-        ("mcp-check", "Verify MCP server registration with Claude"),
+        ("mcp-check", "Verify MCP registration (Claude CLI check)"),
         ("models list", "List available embedding and reranker models"),
         ("models active", "Show currently configured models"),
         ("models install", "Download a model by short name"),
-        ("config reranker", "Toggle reranker on/off"),
+        ("config model", "Switch the active embedding model"),
+        ("config reranker", "Toggle reranker on/off (or set model)"),
     ]
     for name, desc in cmds:
         print(f"  {cyan(name):<20s} {desc}")
 
     print(f"\n{bold('EXAMPLES')}")
-    print(f"  python scripts/cli.py doctor        # Verify installation")
-    print(f"  python scripts/cli.py setup-guide    # Setup instructions")
-    print(f"  python scripts/cli.py status         # Show project status\n")
+    print(f"  {prefix} doctor        # Verify installation")
+    print(f"  {prefix} setup-guide    # Setup instructions")
+    print(f"  {prefix} status         # Show project status\n")
 
     print(f"{bold('MCP SERVER')}")
-    if is_windows():
-        print(f"  uv run --directory \"{install_dir}\" python mcp_server/server.py")
-    else:
-        print(f"  uv run --directory {install_dir} python mcp_server/server.py")
+    print(f"  {mcp_cmd}")
 
     print(f"\nSee README.md for full documentation.")
 
 
 def cmd_version() -> None:
     """Print version and platform information."""
-    print(f"agent-context-code  {VERSION}")
+    print(f"agent-context-local  {VERSION}")
     print(f"Platform:  {get_platform_label()} ({platform.machine()})")
     print(f"Python:    {platform.python_version()}")
 
@@ -284,7 +352,7 @@ def cmd_paths() -> None:
     if storage is None:
         print(f"  {yellow('—')} Install directory:       {install_dir}")
         print(f"  {yellow('—')} Storage-dependent paths are unavailable until {cyan('CODE_SEARCH_STORAGE')} points to a writable location.")
-        print(f"\n{bold('Claude config locations (checked in order):')}")
+        print(f"\n{bold('Claude Desktop config locations (optional, checked in order):')}")
         for p in get_claude_config_paths():
             marker = green("✓") if p.is_file() else yellow("—")
             print(f"  {marker} {p}")
@@ -302,7 +370,7 @@ def cmd_paths() -> None:
         marker = green("✓") if exists else yellow("—")
         print(f"  {marker} {label + ':':<22s} {path}")
 
-    print(f"\n{bold('Claude config locations (checked in order):')}")
+    print(f"\n{bold('Claude Desktop config locations (optional, checked in order):')}")
     for p in get_claude_config_paths():
         marker = green("✓") if p.is_file() else yellow("—")
         print(f"  {marker} {p}")
@@ -417,11 +485,11 @@ def cmd_doctor() -> None:
         else:
             print(f"  {cyan('ℹ')} Reranker not configured (optional)")
 
-    # 9. Claude CLI (WARNING)
+    # 9. Claude CLI availability (optional, only needed for claude mcp commands)
     if shutil.which("claude"):
-        print(f"  {green('✓')} Claude CLI found in PATH")
+        print(f"  {green('✓')} Claude CLI found in PATH (optional)")
     else:
-        msg = "Claude CLI not found in PATH – install from https://claude.ai/code"
+        msg = "Claude CLI not found in PATH (optional unless you use Claude as your MCP client)"
         print(f"  {yellow('!')} {msg}")
         warnings.append(msg)
 
@@ -464,7 +532,7 @@ def cmd_doctor() -> None:
 def cmd_status() -> None:
     """Show per-project index statistics from the storage directory.
 
-    Iterates ``~/.claude_code_search/projects/`` and prints each project's
+    Iterates ``~/.agent_code_search/projects/`` and prints each project's
     name, workspace path, chunk count, and file count from its ``stats.json``.
     """
     print(bold("Index Status\n"))
@@ -476,7 +544,7 @@ def cmd_status() -> None:
 
     if not projects_dir.is_dir():
         print("  No projects indexed yet.")
-        print(f"  Use Claude Code to say: {cyan('index this codebase')}")
+        print(f"  Use your AI coding assistant to say: {cyan('index this codebase')}")
         return
 
     project_count = 0
@@ -554,7 +622,7 @@ def cmd_setup_guide() -> None:
         else:
             print(f"   Current model: {cyan(current_model)} {green('(open – no HF auth required)')}")
     else:
-        print(f"   Default model: {cyan('Qwen/Qwen3-Embedding-0.6B')} {green('(open – no HF auth required)')}")
+        print(f"   Default model: {cyan(_DEFAULT_EMBEDDING_MODEL)} {green('(open – no HF auth required)')}")
 
     print()
     if is_windows():
@@ -582,12 +650,11 @@ def cmd_setup_guide() -> None:
         print(f"   {cyan(f'curl -fsSL {INSTALL_SH_URL} | bash')}\n")
 
     # Step 3 – Register MCP
+    mcp_cmd = _mcp_server_cmd()
     print(bold("3. Register the MCP server"))
-    print(f"   {yellow('Run this in your terminal, not inside a Claude Code session.')}\n")
-    if is_windows():
-        print(f"   {cyan(f'claude mcp add code-search --scope user -- uv run --directory \"{install_dir}\" python mcp_server/server.py')}\n")
-    else:
-        print(f"   {cyan(f'claude mcp add code-search --scope user -- uv run --directory {install_dir} python mcp_server/server.py')}\n")
+    print(f"   {yellow('Run this in your terminal, not inside your MCP client session.')}\n")
+    print(f"   {cyan(f'claude mcp add code-search --scope user -- {mcp_cmd}')}\n")
+    print(f"   For other MCP clients, run: {cyan(f'{_cmd_prefix()} setup-mcp')}\n")
 
     if is_wsl():
         print(f"   {yellow('WSL tip:')} If Claude Desktop runs on Windows, register the server")
@@ -602,17 +669,16 @@ def cmd_setup_guide() -> None:
         print(f"     {cyan('args = [\"mcp\", \"gateway\", \"run\"]')}\n")
 
     # Step 4 – Verify
+    prefix = _cmd_prefix()
     print(bold("4. Verify"))
-    if is_windows():
-        print(f"   {cyan(f'uv run --directory \"{install_dir}\" python scripts/cli.py doctor')}")
-    else:
-        print(f"   {cyan(f'uv run --directory {install_dir} python scripts/cli.py doctor')}")
-    print(f"   {cyan('claude mcp list')}")
-    print(f"   Look for: code-search … {green('✓ Connected')}\n")
+    print(f"   {cyan(f'{prefix} doctor')}")
+    print(f"   If using Claude CLI, run: {cyan('claude mcp list')}")
+    print(f"   Look for: code-search … {green('✓ Connected')}")
+    print(f"   For other MCP clients, verify using your client's MCP server list/health view.\n")
 
     # Step 5 – Use
     print(bold("5. Index & search"))
-    print(f"   Open Claude Code in your project directory and say:")
+    print(f"   Open your AI coding assistant in your project directory and say:")
     print(f"   {cyan('index this codebase')}\n")
     print(f"   Then search with:")
     print(f"   {cyan('search for authentication logic')}\n")
@@ -632,34 +698,30 @@ def cmd_setup_guide() -> None:
         print(f"    Or set {cyan('HF_TOKEN')} in your shell.\n")
         print(f"  {bold('Alternative:')} Switch to a non-gated model:")
         if is_windows():
-            print(f"    {cyan('$env:CODE_SEARCH_MODEL=\"Qwen/Qwen3-Embedding-0.6B\"')}")
+            print(f"    {cyan(f'$env:CODE_SEARCH_MODEL=\"{_DEFAULT_EMBEDDING_MODEL}\"')}")
         else:
-            print(f"    {cyan('export CODE_SEARCH_MODEL=\"Qwen/Qwen3-Embedding-0.6B\"')}")
+            print(f"    {cyan(f'export CODE_SEARCH_MODEL=\"{_DEFAULT_EMBEDDING_MODEL}\"')}")
         print(f"    Then re-run the installer.\n")
     else:
-        effective_model = current_model or "Qwen/Qwen3-Embedding-0.6B"
+        effective_model = current_model or _DEFAULT_EMBEDDING_MODEL
         print(f"  {green('✓')} Your model ({cyan(effective_model)}) does not require HuggingFace authentication.\n")
 
     # Troubleshooting
     print(bold("Troubleshooting"))
-    if is_windows():
-        print(f"  • Run {cyan(f'uv run --directory \"{install_dir}\" python scripts/cli.py doctor')} to diagnose issues")
-    else:
-        print(f"  • Run {cyan(f'uv run --directory {install_dir} python scripts/cli.py doctor')} to diagnose issues")
+    print(f"  • Run {cyan(f'{_cmd_prefix()} doctor')} to diagnose issues")
     print(f"  • Ensure Python >= 3.12 and uv are installed")
     print()
 
 
 def cmd_troubleshoot() -> None:
     """Print troubleshooting guidance for model downloads and HuggingFace auth."""
-    install_dir = get_default_install_dir()
     print(bold("Troubleshooting Guide\n"))
 
     # ── Model download issues ────────────────────────────────────────
     print(bold("1. Gated model access (google/embeddinggemma-300m)"))
     print()
     print(f"  The legacy default embedding model is {yellow('gated')} by Google on HuggingFace.")
-    print(f"  The new default ({cyan('Qwen/Qwen3-Embedding-0.6B')}) is {green('not gated')}.")
+    print(f"  The new default ({cyan(_DEFAULT_EMBEDDING_MODEL)}) is {green('not gated')}.")
     print(f"  If you are using a gated model, you must accept the license:\n")
     print(f"  a) Go to https://huggingface.co/google/embeddinggemma-300m")
     print(f"  b) Sign in (or create an account at https://huggingface.co/join)")
@@ -689,10 +751,7 @@ def cmd_troubleshoot() -> None:
 
     print(bold("3. Verify your setup"))
     print()
-    if is_windows():
-        print(f"    {cyan(f'uv run --directory \"{install_dir}\" python scripts/cli.py doctor')}")
-    else:
-        print(f"    {cyan(f'uv run --directory {install_dir} python scripts/cli.py doctor')}")
+    print(f"    {cyan(f'{_cmd_prefix()} doctor')}")
     print()
 
     print(bold("4. Common errors and fixes"))
@@ -715,13 +774,13 @@ def cmd_troubleshoot() -> None:
 
     print(bold("5. Switch to a non-gated model"))
     print()
-    print(f"  The default model ({cyan('Qwen/Qwen3-Embedding-0.6B')}) does {green('not')} require")
+    print(f"  The default model ({cyan(_DEFAULT_EMBEDDING_MODEL)}) does {green('not')} require")
     print(f"  HuggingFace gated access. If you switched to a gated model and")
     print(f"  are having auth issues, consider switching back:\n")
     if is_windows():
-        print(f"    {cyan('$env:CODE_SEARCH_MODEL=\"Qwen/Qwen3-Embedding-0.6B\"')}")
+        print(f"    {cyan(f'$env:CODE_SEARCH_MODEL=\"{_DEFAULT_EMBEDDING_MODEL}\"')}")
     else:
-        print(f"    {cyan('export CODE_SEARCH_MODEL=\"Qwen/Qwen3-Embedding-0.6B\"')}")
+        print(f"    {cyan(f'export CODE_SEARCH_MODEL=\"{_DEFAULT_EMBEDDING_MODEL}\"')}")
     print()
     print(f"  Or install interactively:")
     print(f"    {cyan('python scripts/cli.py models list')}")
@@ -763,15 +822,14 @@ def cmd_troubleshoot() -> None:
 
 
 def cmd_mcp_check() -> None:
-    """Check if the code-search MCP server is registered with Claude CLI."""
-    install_dir = get_default_install_dir()
-
-    print(bold("MCP Server Registration Check\n"))
+    """Check MCP registration using Claude CLI (optional helper)."""
+    print(bold("MCP Server Registration Check (Claude CLI)\n"))
 
     claude_path = shutil.which("claude")
     if not claude_path:
         print(f"  {red('✗')} Claude CLI not found in PATH")
-        print(f"    Install from https://claude.ai/code\n")
+        print(f"    This check is Claude-specific. If you use another MCP client, verify there instead.")
+        print(f"    Install Claude CLI (optional): https://claude.ai/code\n")
         return
 
     print(f"  {green('✓')} Claude CLI found: {claude_path}")
@@ -794,10 +852,7 @@ def cmd_mcp_check() -> None:
         else:
             print(f"  {yellow('!')} code-search MCP server is NOT registered\n")
             print(f"  Register it with:\n")
-            if is_windows():
-                print(f"  {cyan(f'claude mcp add code-search --scope user -- uv run --directory \"{install_dir}\" python mcp_server/server.py')}")
-            else:
-                print(f"  {cyan(f'claude mcp add code-search --scope user -- uv run --directory {install_dir} python mcp_server/server.py')}")
+            print(f"  {cyan(f'claude mcp add code-search --scope user -- {_mcp_server_cmd()}')}")
     except FileNotFoundError:
         print(f"  {red('✗')} Could not run 'claude mcp list'")
     except subprocess.TimeoutExpired:
@@ -806,6 +861,412 @@ def cmd_mcp_check() -> None:
         print(f"  {yellow('!')} Could not check MCP status: {exc}")
 
     print()
+
+
+# ── MCP setup command ─────────────────────────────────────────────────
+
+# Each entry: key → (display_name, has_cli, brief_description)
+# Config file / setup details are in the cmd_setup_mcp_tool function.
+MCP_TOOLS = {
+    "claude-code": ("Claude Code", True, "CLI: claude mcp add"),
+    "copilot-cli": ("GitHub Copilot CLI", True, "CLI: copilot mcp add"),
+    "gemini-cli": ("Gemini CLI", False, "Config: ~/.gemini/settings.json"),
+    "cursor": ("Cursor", False, "Config: ~/.cursor/mcp.json"),
+    "codex-cli": ("OpenAI Codex CLI", True, "Config: ~/.codex/config.toml"),
+    "opencode": ("OpenCode", True, "Config: ~/.config/opencode/opencode.json"),
+    "cline": ("Cline (VS Code)", False, "VS Code globalStorage UI"),
+    "roo-code": ("Roo Code (VS Code)", False, "VS Code globalStorage UI"),
+}
+
+
+def cmd_setup_mcp() -> None:
+    """Print MCP registration instructions for supported AI coding clients."""
+    args = sys.argv[2:]  # skip "cli.py setup-mcp"
+    if not args or args[0] == "--list":
+        _setup_mcp_list()
+        return
+
+    tool_key = args[0].lower()
+    if tool_key not in MCP_TOOLS:
+        print(red(f"Unknown tool: '{tool_key}'"))
+        print(f"Run '{cyan(f'{_cmd_prefix()} setup-mcp')}' to see supported tools.")
+        sys.exit(1)
+
+    _setup_mcp_tool(tool_key)
+
+
+def _setup_mcp_list() -> None:
+    """List all supported MCP client tools."""
+    print(bold("Supported MCP Client Tools\n"))
+    print(f"Run '{cyan(f'{_cmd_prefix()} setup-mcp <tool>')}' for setup instructions.\n")
+    for key, (name, _has_cli, brief) in MCP_TOOLS.items():
+        print(f"  {cyan(key):<18s} {name:<28s} {brief}")
+    print()
+
+
+def _setup_mcp_tool(tool_key: str) -> None:
+    """Print detailed setup instructions for a specific MCP client tool."""
+    name, _has_cli, _brief = MCP_TOOLS[tool_key]
+    mcp_cmd = _mcp_server_cmd()
+    install_dir = get_default_install_dir()
+
+    print(bold(f"MCP Setup: {name}\n"))
+
+    # Prerequisites
+    print(bold("Prerequisites"))
+    print(f"  • Python 3.12+ and uv installed")
+    print(f"  • AGENT Context Local installed (run the installer or pip install)")
+    print(f"  • MCP server command: {cyan(mcp_cmd)}")
+    print()
+
+    # Per-tool instructions
+    if tool_key == "claude-code":
+        _mcp_claude_code(mcp_cmd)
+    elif tool_key == "copilot-cli":
+        _mcp_copilot_cli(mcp_cmd)
+    elif tool_key == "gemini-cli":
+        _mcp_gemini_cli(mcp_cmd, install_dir)
+    elif tool_key == "cursor":
+        _mcp_cursor(mcp_cmd, install_dir)
+    elif tool_key == "codex-cli":
+        _mcp_codex_cli(mcp_cmd, install_dir)
+    elif tool_key == "opencode":
+        _mcp_opencode(mcp_cmd, install_dir)
+    elif tool_key == "cline":
+        _mcp_cline(mcp_cmd, install_dir)
+    elif tool_key == "roo-code":
+        _mcp_roo_code(mcp_cmd, install_dir)
+
+    # Verification
+    print(bold("Verify"))
+    print(f"  Run {cyan(f'{_cmd_prefix()} doctor')} to check installation health.")
+    print()
+
+
+def _mcp_claude_code(mcp_cmd: str) -> None:
+    print(bold("Registration (run in your terminal, not inside Claude Code)"))
+    print()
+    print(f"  {cyan(f'claude mcp add code-search --scope user -- {mcp_cmd}')}")
+    print()
+    print(f"  Verify: {cyan('claude mcp list')}")
+    print(f"  Look for: code-search … Connected")
+    print()
+    if is_windows():
+        print(f"  {yellow('Windows cmd.exe:')} prefix with {cyan('cmd /c')} if needed.")
+        print()
+
+
+def _mcp_copilot_cli(mcp_cmd: str) -> None:
+    print(bold("Registration"))
+    print()
+    print(f"  {cyan(f'copilot mcp add code-search -- {mcp_cmd}')}")
+    print()
+    print(f"  Or edit {cyan('~/.copilot/mcp-config.json')}:")
+    print()
+    _print_json_config(mcp_cmd)
+    print()
+
+
+def _mcp_gemini_cli(mcp_cmd: str, install_dir: Path) -> None:
+    print(bold("Configuration"))
+    print()
+    print(f"  Edit {cyan('~/.gemini/settings.json')} and add under {cyan('\"mcpServers\"')}:")
+    print()
+    _print_json_config(mcp_cmd)
+    print()
+
+
+def _mcp_cursor(mcp_cmd: str, install_dir: Path) -> None:
+    print(bold("Configuration"))
+    print()
+    print(f"  Edit {cyan('~/.cursor/mcp.json')} (global) or {cyan('.cursor/mcp.json')} (per-project):")
+    print()
+    _print_json_config(mcp_cmd)
+    print()
+
+
+def _mcp_codex_cli(mcp_cmd: str, install_dir: Path) -> None:
+    print(bold("Configuration"))
+    print()
+    print(f"  Edit {cyan('~/.codex/config.toml')} and add:")
+    print()
+    # Split mcp_cmd into command + args for TOML format
+    parts = mcp_cmd.split()
+    cmd = parts[0]
+    args_list = parts[1:] if len(parts) > 1 else []
+    args_toml = ", ".join(f'"{a}"' for a in args_list)
+    print(f'  {cyan("[mcp_servers.code-search]")}')
+    print(f'  {cyan(f"command = " + chr(34) + cmd + chr(34))}')
+    if args_list:
+        print(f'  {cyan(f"args = [{args_toml}]")}')
+    print()
+
+
+def _mcp_opencode(mcp_cmd: str, install_dir: Path) -> None:
+    print(bold("Configuration"))
+    print()
+    print(f"  Edit {cyan('~/.config/opencode/opencode.json')} and add under {cyan('\"mcpServers\"')}:")
+    print()
+    _print_json_config(mcp_cmd)
+    print()
+
+
+def _mcp_cline(mcp_cmd: str, install_dir: Path) -> None:
+    print(bold("Configuration (via VS Code UI)"))
+    print()
+    print(f"  1. Open VS Code with Cline installed")
+    print(f"  2. Open Cline settings (gear icon in the Cline panel)")
+    print(f"  3. Navigate to MCP Servers")
+    print(f"  4. Add a new server with these settings:")
+    print()
+    parts = mcp_cmd.split()
+    print(f"     Name:    {cyan('code-search')}")
+    print(f"     Command: {cyan(parts[0])}")
+    if len(parts) > 1:
+        print(f"     Args:    {cyan(' '.join(parts[1:]))}")
+    print()
+    print(f"  Or edit the Cline MCP settings JSON directly:")
+    print()
+    _print_json_config(mcp_cmd)
+    print()
+
+
+def _mcp_roo_code(mcp_cmd: str, install_dir: Path) -> None:
+    print(bold("Configuration (via VS Code UI)"))
+    print()
+    print(f"  1. Open VS Code with Roo Code installed")
+    print(f"  2. Open Roo Code settings")
+    print(f"  3. Navigate to MCP Servers")
+    print(f"  4. Add a new server with these settings:")
+    print()
+    parts = mcp_cmd.split()
+    print(f"     Name:    {cyan('code-search')}")
+    print(f"     Command: {cyan(parts[0])}")
+    if len(parts) > 1:
+        print(f"     Args:    {cyan(' '.join(parts[1:]))}")
+    print()
+    print(f"  Or edit the Roo Code MCP settings JSON directly:")
+    print()
+    _print_json_config(mcp_cmd)
+    print()
+
+
+def _print_json_config(mcp_cmd: str) -> None:
+    """Print a JSON MCP server config snippet for the given server command."""
+    parts = mcp_cmd.split()
+    cmd = parts[0]
+    args = parts[1:] if len(parts) > 1 else []
+    args_json = ", ".join(f'"{a}"' for a in args)
+    print(f'  {{')
+    print(f'    "mcpServers": {{')
+    print(f'      "code-search": {{')
+    print(f'        "command": "{cmd}",')
+    print(f'        "args": [{args_json}]')
+    print(f'      }}')
+    print(f'    }}')
+    print(f'  }}')
+
+
+# ── GPU setup command ─────────────────────────────────────────────────
+
+def cmd_gpu_setup() -> None:
+    """Detect GPU hardware and install the matching PyTorch build."""
+    print(bold("GPU Setup\n"))
+
+    # Step 1: Detect hardware
+    vendor, cuda_ver, gpu_name, index_url = _detect_gpu_for_setup()
+
+    if vendor == "mps":
+        print(f"  {green('✓')} Apple Silicon detected ({gpu_name})")
+        print(f"    MPS acceleration is included in the standard PyTorch macOS build.")
+        print(f"    No additional installation needed.\n")
+        _verify_torch_gpu()
+        return
+
+    if vendor == "nvidia":
+        print(f"  {green('✓')} NVIDIA GPU detected: {gpu_name}")
+        print(f"    Driver CUDA version: {cuda_ver}")
+        print(f"    PyTorch index: {index_url}\n")
+    elif vendor == "amd":
+        print(f"  {green('✓')} AMD GPU detected: {gpu_name}")
+        if cuda_ver:
+            print(f"    ROCm version: {cuda_ver}")
+        print(f"    PyTorch index: {index_url}\n")
+    else:
+        print(f"  {yellow('!')} No supported GPU detected.")
+        print(f"    Embedding generation will use CPU.\n")
+        print(f"  Supported GPUs:")
+        print(f"    • NVIDIA: requires nvidia-smi in PATH (comes with NVIDIA drivers)")
+        print(f"    • AMD:    requires ROCm/HIP SDK (rocminfo or rocm-smi in PATH)")
+        print(f"    • Apple:  M1/M2/M3/M4 — automatic via MPS\n")
+        return
+
+    if not index_url:
+        print(f"  {yellow('!')} Could not determine the right PyTorch build for your hardware.")
+        print(f"    Install manually: uv pip install torch --index-url <url> --reinstall")
+        return
+
+    # Step 2: Check current PyTorch build
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import torch; print(torch.__version__)"],
+            capture_output=True, text=True, timeout=15,
+        )
+        current = result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        current = "unknown"
+
+    print(f"  Current PyTorch: {current}")
+
+    already_gpu = "cu" in current or "rocm" in current
+    if already_gpu:
+        print(f"  {green('✓')} PyTorch already has GPU support.\n")
+        _verify_torch_gpu()
+        return
+
+    # Step 3: Install GPU PyTorch
+    print(f"\n  Installing GPU-accelerated PyTorch...")
+    print(f"  Command: uv pip install torch --index-url {index_url} --reinstall\n")
+
+    try:
+        result = subprocess.run(
+            ["uv", "pip", "install", "torch", "--index-url", index_url, "--reinstall"],
+            timeout=600,
+        )
+        if result.returncode == 0:
+            print(f"\n  {green('✓')} GPU-accelerated PyTorch installed successfully.")
+            # Update uv.lock so future `uv run` calls don't revert to CPU torch.
+            # Without this, uv re-syncs from the lockfile on every `uv run` and
+            # overwrites the GPU build.  `uv lock --upgrade-package torch` refreshes
+            # only the torch entry while leaving everything else pinned.
+            _update_torch_lockfile(index_url)
+            _verify_torch_gpu()
+        else:
+            print(f"\n  {red('✗')} Installation failed. Retry manually:")
+            print(f"    uv pip install torch --index-url {index_url} --reinstall\n")
+    except subprocess.TimeoutExpired:
+        print(f"\n  {yellow('!')} Installation timed out. Retry manually:")
+        print(f"    uv pip install torch --index-url {index_url} --reinstall\n")
+    except Exception as exc:
+        print(f"\n  {red('✗')} Installation error: {exc}\n")
+
+
+def _update_torch_lockfile(index_url: str) -> None:
+    """Print --no-sync instructions after a GPU torch install.
+
+    uv syncs the venv against uv.lock before every `uv run`.  After gpu-setup
+    installs GPU torch, the next `uv run` reverts it to CPU (uv.lock still pins
+    the CPU build).  The correct fix is `--no-sync` on the MCP server command,
+    which skips the venv sync and uses whatever is in the venv as-is.
+
+    The install script already sets up the venv correctly (uv sync + GPU torch),
+    so --no-sync is safe — it just prevents the silent revert.
+    """
+    project_dir = Path(__file__).resolve().parent.parent
+    mcp_dir = str(project_dir)
+
+    print(f"\n  {yellow('!')} Important: uv reverts GPU torch on every `uv run` (syncs from uv.lock).")
+    print(f"  Add --no-sync to your MCP server command to prevent this:\n")
+    print(f"    claude mcp remove code-search")
+    if sys.platform == "win32":
+        print(f'    claude mcp add code-search --scope user -- uv run --no-sync --directory "{mcp_dir}" python mcp_server/server.py')
+    else:
+        print(f"    claude mcp add code-search --scope user -- uv run --no-sync --directory '{mcp_dir}' python mcp_server/server.py")
+    print(f"\n  --no-sync skips the venv sync step so GPU torch is not overwritten.\n")
+
+
+def _detect_gpu_for_setup():
+    """Detect GPU vendor and return (vendor, version, name, index_url)."""
+    # Apple Silicon
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return ("mps", None, "Apple Silicon", None)
+
+    # NVIDIA
+    if shutil.which("nvidia-smi"):
+        gpu_name = "unknown"
+        cuda_ver = None
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                gpu_name = result.stdout.strip().splitlines()[0]
+        except Exception:
+            pass
+        try:
+            result = subprocess.run(
+                ["nvidia-smi"], capture_output=True, text=True, timeout=5,
+            )
+            import re
+            m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout)
+            if m:
+                major, minor = int(m.group(1)), int(m.group(2))
+                cuda_ver = f"{major}.{minor}"
+                if major >= 13 or (major == 12 and minor >= 8):
+                    url = "https://download.pytorch.org/whl/cu128"
+                elif major == 12 and minor >= 6:
+                    url = "https://download.pytorch.org/whl/cu126"
+                elif major == 12 and minor >= 4:
+                    url = "https://download.pytorch.org/whl/cu124"
+                elif major == 12:
+                    url = "https://download.pytorch.org/whl/cu121"
+                elif major == 11 and minor >= 8:
+                    url = "https://download.pytorch.org/whl/cu118"
+                else:
+                    url = None
+                return ("nvidia", cuda_ver, gpu_name, url)
+        except Exception:
+            pass
+        return ("nvidia", cuda_ver, gpu_name, None)
+
+    # AMD ROCm
+    if shutil.which("rocminfo") or shutil.which("rocm-smi"):
+        gpu_name = "unknown"
+        rocm_ver = None
+        try:
+            result = subprocess.run(
+                ["rocm-smi", "--showproductname"],
+                capture_output=True, text=True, timeout=5,
+            )
+            import re
+            m = re.search(r"GPU\[\d+\]\s*:\s*(.*)", result.stdout)
+            if m:
+                gpu_name = m.group(1).strip()
+        except Exception:
+            pass
+        url = "https://download.pytorch.org/whl/rocm6.2.4"
+        return ("amd", rocm_ver, gpu_name, url)
+
+    return ("cpu", None, None, None)
+
+
+def _verify_torch_gpu() -> None:
+    """Quick check: verify PyTorch can see the GPU."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import torch; "
+                "cuda = torch.cuda.is_available(); "
+                "mps = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available(); "
+                "dev = 'CUDA' if cuda else ('MPS' if mps else 'CPU'); "
+                "name = torch.cuda.get_device_name(0) if cuda else ''; "
+                "print(f'{dev}|{name}|{torch.__version__}')"
+            )],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            parts = result.stdout.strip().split("|")
+            dev, name, ver = parts[0], parts[1], parts[2]
+            if dev in ("CUDA", "MPS"):
+                label = f"{dev}: {name}" if name else dev
+                print(f"  {green('✓')} PyTorch {ver} — accelerator: {label}")
+            else:
+                print(f"  {yellow('!')} PyTorch {ver} — running on CPU")
+        else:
+            print(f"  {yellow('!')} Could not verify PyTorch GPU status")
+    except Exception as exc:
+        print(f"  {yellow('!')} Verification failed: {exc}")
 
 
 # ── Model & reranker management commands ─────────────────────────────
@@ -934,15 +1395,26 @@ def cmd_config() -> None:
     """Dispatch ``config <subcommand>``."""
     args = sys.argv[2:]
     if not args:
-        print(red("Usage: config reranker <on|off>"))
+        print(red("Usage: config model <short-name>  |  config reranker <on|off>  |  config reranker model <short-name>"))
         sys.exit(1)
 
     sub = args[0].lower()
     if sub == "reranker":
         if len(args) < 2:
-            print(red("Usage: config reranker <on|off>"))
+            print(red("Usage: config reranker <on|off>  OR  config reranker model <short-name>"))
             sys.exit(1)
-        cmd_config_reranker(args[1])
+        if args[1].lower() == "model":
+            if len(args) < 3:
+                print(red("Usage: config reranker model <short-name>"))
+                sys.exit(1)
+            cmd_config_reranker_model(args[2])
+        else:
+            cmd_config_reranker(args[1])
+    elif sub == "model":
+        if len(args) < 2:
+            print(red("Usage: config model <short-name>"))
+            sys.exit(1)
+        cmd_config_model(args[1])
     else:
         print(red(f"Unknown config subcommand: '{sub}'"))
         sys.exit(1)
@@ -963,8 +1435,9 @@ def cmd_config_reranker(state: str) -> None:
         sys.exit(1)
 
     # Read existing reranker config to preserve model_name and recall_k
+    from reranking.reranker_catalog import DEFAULT_RERANKER_MODEL
     existing = load_reranker_config(storage_dir=storage)
-    model_name = existing.get("model_name", "Qwen/Qwen3-Reranker-4B")
+    model_name = existing.get("model_name", DEFAULT_RERANKER_MODEL)
     recall_k = existing.get("recall_k", 50)
 
     save_reranker_config(
@@ -976,6 +1449,73 @@ def cmd_config_reranker(state: str) -> None:
 
     status = green("enabled") if enabled else yellow("disabled")
     print(f"Reranker {status} (model: {model_name}, recall_k={recall_k})")
+
+
+def cmd_config_model(short_name: str) -> None:
+    """Switch the active embedding model in install_config.json."""
+    from embeddings.model_catalog import MODEL_CATALOG, EMBEDDING_SHORT_NAMES
+
+    storage = _get_storage_dir_or_report("config model")
+    if storage is None:
+        return
+
+    # Resolve short name → full HuggingFace model name
+    if short_name in EMBEDDING_SHORT_NAMES:
+        full_name = EMBEDDING_SHORT_NAMES[short_name]
+    elif short_name in MODEL_CATALOG:
+        full_name = short_name
+    else:
+        print(red(f"Unknown model: '{short_name}'"))
+        print(f"Run '{cyan(_cmd_prefix())} models list' to see available models.")
+        sys.exit(1)
+
+    # Warn if the model does not appear to be downloaded yet
+    models_dir = storage / "models"
+    # HuggingFace hub caches models as "models--<org>--<model>" directories
+    sanitised = "models--" + full_name.replace("/", "--")
+    try:
+        downloaded = models_dir.is_dir() and any(
+            p.name == sanitised or p.name.startswith(sanitised)
+            for p in models_dir.iterdir()
+            if p.is_dir()
+        )
+    except OSError:
+        downloaded = False
+    if not downloaded:
+        print(yellow(f"Warning: '{full_name}' doesn't appear to be downloaded yet."))
+        print(f"  Download it first: {cyan(f'{_cmd_prefix()} models install {short_name}')}")
+
+    save_local_install_config(full_name, storage_dir=storage)
+    print(f"Embedding model set to: {green(full_name)}")
+    print(f"Restart the MCP server for the change to take effect.")
+
+
+def cmd_config_reranker_model(short_name: str) -> None:
+    """Switch the reranker model without changing enabled/disabled state."""
+    from reranking.reranker_catalog import RERANKER_CATALOG, RERANKER_SHORT_NAMES
+
+    storage = _get_storage_dir_or_report("config reranker model")
+    if storage is None:
+        return
+
+    if short_name in RERANKER_SHORT_NAMES:
+        full_name = RERANKER_SHORT_NAMES[short_name]
+    elif short_name in RERANKER_CATALOG:
+        full_name = short_name
+    else:
+        print(red(f"Unknown reranker model: '{short_name}'"))
+        print(f"Run '{cyan(_cmd_prefix())} models list' to see available reranker models.")
+        sys.exit(1)
+
+    # Preserve enabled state and recall_k
+    existing = load_reranker_config(storage_dir=storage)
+    enabled = existing.get("enabled", False)
+    recall_k = existing.get("recall_k", 50)
+
+    save_reranker_config(model_name=full_name, enabled=enabled, recall_k=recall_k, storage_dir=storage)
+    status = green("enabled") if enabled else yellow("disabled")
+    print(f"Reranker model set to: {green(full_name)} [{status}]")
+    print(f"Restart the MCP server for the change to take effect.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────
@@ -990,6 +1530,8 @@ COMMANDS = {
     "status": cmd_status,
     "paths": cmd_paths,
     "setup-guide": cmd_setup_guide,
+    "setup-mcp": cmd_setup_mcp,
+    "gpu-setup": cmd_gpu_setup,
     "troubleshoot": cmd_troubleshoot,
     "mcp-check": cmd_mcp_check,
     "models": cmd_models,
@@ -1018,6 +1560,13 @@ def _suggest_command(unknown: str) -> str:
         "mcp": "mcp-check",
         "mcpcheck": "mcp-check",
         "mcp_check": "mcp-check",
+        "setupmcp": "setup-mcp",
+        "setup_mcp": "setup-mcp",
+        "mcpsetup": "setup-mcp",
+        "gpu": "gpu-setup",
+        "gpusetup": "gpu-setup",
+        "gpu_setup": "gpu-setup",
+        "cuda": "gpu-setup",
     }
     return aliases.get(unknown.lower().replace("-", "").replace("_", ""), "")
 

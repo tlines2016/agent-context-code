@@ -6,7 +6,7 @@ set -euo pipefail
 # Shared prerequisites (uv, Python, git) are intentionally NOT removed.
 
 PROJECT_DIR="${HOME}/.local/share/agent-context-code"
-STORAGE_DIR="${CODE_SEARCH_STORAGE:-${HOME}/.claude_code_search}"
+STORAGE_DIR="${CODE_SEARCH_STORAGE:-${HOME}/.agent_code_search}"
 FORCE=0
 DRY_RUN=0
 SKIP_MCP=0
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --project-dir DIR    App checkout directory (default: ~/.local/share/agent-context-code)"
-            echo "  --storage-dir DIR    Storage root directory (default: ~/.claude_code_search)"
+            echo "  --storage-dir DIR    Storage root directory (default: ~/.agent_code_search)"
             echo "  --force              Skip confirmation prompt"
             echo "  --dry-run            Preview what would be removed without deleting"
             echo "  --skip-mcp-remove    Skip MCP server deregistration"
@@ -114,7 +114,7 @@ storage_path_looks_like_context_storage() {
     local path="$1"
     local base
     base="$(basename "$path")"
-    if [[ "$base" == ".claude_code_search" ]]; then
+    if [[ "$base" == ".agent_code_search" || "$base" == ".claude_code_search" ]]; then
         return 0
     fi
 

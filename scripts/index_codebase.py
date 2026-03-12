@@ -7,10 +7,11 @@ import logging
 import os
 from pathlib import Path
 
-# Add the parent directory to the path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from common_utils import VERSION
+try:
+    from common_utils import VERSION
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import VERSION
 from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager
@@ -43,7 +44,7 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"agent-context-code {VERSION}",
+        version=f"agent-context-local {VERSION}",
     )
     parser.add_argument(
         "directory",
@@ -51,8 +52,8 @@ def main():
     )
     parser.add_argument(
         "--storage-dir",
-        default=str(Path.home() / ".claude_code_search"),
-        help="Directory to store index and embeddings (default: ~/.claude_code_search)"
+        default=str(Path.home() / ".agent_code_search"),
+        help="Directory to store index and embeddings (default: ~/.agent_code_search)"
     )
     parser.add_argument(
         "--batch-size",
@@ -184,7 +185,7 @@ def main():
                 logger.info(f"  {tag}: {count}")
         
         logger.info(f"\nStorage location: {storage_dir}")
-        logger.info("\nYou can now use the MCP server for Claude Code integration:")
+        logger.info("\nYou can now use the MCP server with your AI coding assistant:")
         logger.info(f"  python {Path(__file__).parent.parent / 'mcp_server' / 'server.py'}")
         
     except KeyboardInterrupt:

@@ -167,14 +167,13 @@ class TestFilterClauses:
         results = index_manager.search(qv, k=5, filters={"chunk_type": "class"})
         assert results == []
 
-    def test_file_pattern_filter_underscore_is_sql_wildcard(self, tmp_path):
-        """Document known SQL LIKE behavior: '_' in file_pattern matches any single char.
+    def test_file_pattern_filter_underscore_is_literal(self, tmp_path):
+        """Verify that '_' in file_pattern is treated as a literal character.
 
-        The _build_where_clause only escapes single-quotes, not SQL wildcard
-        chars ('%' and '_').  A pattern like 'foo_bar' will match 'foo_bar',
-        'fooXbar', 'fooZbar', etc. because '_' is a SQL LIKE wildcard.
-        This test documents the current behavior so that any future escaping
-        fix is detectable via a test change.
+        The _build_where_clause escapes SQL wildcard chars ('%' and '_')
+        via _escape_like_pattern() and emits an ESCAPE clause so that
+        DuckDB treats them literally.  A pattern like 'foo_bar' should
+        match only 'foo_bar.py', NOT 'fooXbar.py'.
         """
         im = CodeIndexManager(str(tmp_path / "idx"))
         # Add a chunk at 'foo_bar.py' and one at 'fooXbar.py'
@@ -183,12 +182,11 @@ class TestFilterClauses:
         im.add_embeddings([r1, r2])
 
         qv = np.ones(4, dtype=np.float32) / 2.0
-        # Current behavior: both match because '_' is a wildcard
         results = im.search(qv, k=10, filters={"file_pattern": ["foo_bar"]})
         matched_paths = {meta.get("relative_path") for _, _, meta in results}
-        # Document that both are matched (the wildcard behavior)
-        # If this assertion fails in the future, it means escaping was added
-        assert "foo_bar.py" in matched_paths or "fooXbar.py" in matched_paths
+        # With ESCAPE clause active, '_' is literal — only exact match
+        assert "foo_bar.py" in matched_paths
+        assert "fooXbar.py" not in matched_paths
 
 
 # ---------------------------------------------------------------------------
