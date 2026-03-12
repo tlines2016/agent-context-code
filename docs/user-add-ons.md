@@ -533,22 +533,128 @@ Phase 1 (Project-Level File Lock) and Phase 2 (Global Embedding Semaphore) from 
 
 ---
 
+## Session B — Completed: Tier 1 Languages + Chunker Accuracy Fixes
+
+**Status:** Done (revision-1.5 branch)
+**Date:** 2026-03-12
+
+### What Was Implemented
+
+**Tier 1 Languages Added:**
+- **Bash/Shell** (`.sh`, `.bash`, `.zsh`) — chunks `function_definition` nodes
+- **HTML** (`.html`, `.htm`) — chunks by structural elements (`script`, `style`, `head`, `body`, `main`, `nav`, `header`, `footer`, `section`, `article`, `aside`, `form`, `template`); handles `script_element`/`style_element` distinct node types
+- **CSS** (`.css`) — chunks `rule_set`, `media_statement`, `keyframes_statement`, `import_statement`, `supports_statement`, `charset_statement`
+
+**Note:** PowerShell (`tree-sitter-powershell`) is not available on PyPI. Deferred until a standalone package is published.
+
+**Chunker Accuracy Fixes:**
+- **Java records/sealed classes** — added `record_declaration` to splittable types, `sealed`/`non-sealed` modifier detection
+- **Go generics metadata** — extracts `type_parameter_list` from function/type declarations, adds `has_generics` and `generic_params` metadata
+- **TOML line accuracy** — added comment skipping, dotted key handling, quote stripping for table names
+- **JSX component detection** — replaced string-based heuristic with AST-based `_has_jsx_children()` method that walks subtree for `jsx_element`/`jsx_self_closing_element` nodes
+
+**Base chunker improvement:** Added `child_count == 0` guard to `should_chunk_node()` to filter keyword tokens that share type names with declaration nodes (affects Ruby `class`/`module`, Haskell `class`).
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `chunking/languages/bash_chunker.py` | New — Bash/Shell chunker |
+| `chunking/languages/html_chunker.py` | New — HTML structural element chunker |
+| `chunking/languages/css_chunker.py` | New — CSS rule/at-rule chunker |
+| `chunking/languages/java_chunker.py` | Added `record_declaration`, `sealed`/`non-sealed` modifiers |
+| `chunking/languages/go_chunker.py` | Added Go 1.18+ generics metadata extraction |
+| `chunking/languages/jsx_chunker.py` | AST-based JSX detection replacing string heuristic |
+| `chunking/structured_data_chunker.py` | TOML line accuracy improvements |
+| `chunking/base_chunker.py` | `child_count == 0` keyword token guard |
+| `chunking/available_languages.py` | Registered bash, html, css |
+| `chunking/languages/__init__.py` | LANGUAGE_MAP entries for new extensions |
+| `chunking/multi_language_chunker.py` | chunk_type_map entries for new node types |
+| `pyproject.toml` | Added `tree-sitter-bash`, `tree-sitter-html`, `tree-sitter-css` |
+
+### Test Results
+
+- 484/484 full suite tests pass (0 regressions)
+
+---
+
+## Session D — Completed: Tier 2 + Tier 3 Languages
+
+**Status:** Done (revision-1.5 branch)
+**Date:** 2026-03-12
+
+### What Was Implemented
+
+**Tier 2 Languages Added:**
+- **Ruby** (`.rb`) — chunks `method`, `singleton_method`, `class`, `module`; extracts `constant` for class/module names
+- **PHP** (`.php`) — chunks functions, classes, methods, interfaces, traits, enums, namespaces; uses `language_php()` binding
+- **Swift** (`.swift`) — handles `class_declaration` for class/struct/enum/extension, `protocol_declaration`, `init_declaration`, `function_declaration`, `property_declaration`
+- **SQL** (`.sql`) — chunks `create_table`, `create_view`, `create_index` (note: `create_function`, `create_type`, `create_trigger` are dead entries due to tree-sitter-sql grammar limitations)
+
+**Note:** Angular and Vue chunkers deferred — no standalone PyPI packages available. HTML support (from Session B) covers ~80% of Angular template parsing. Vue would require a multi-language approach similar to Svelte.
+
+**Tier 3 Languages Added:**
+- **Terraform/HCL** (`.tf`, `.tfvars`, `.hcl`) — chunks `block` nodes, extracts block type and labels
+- **Scala** (`.scala`, `.sc`) — chunks classes, objects, traits, functions, vals, vars, type definitions; handles case/sealed classes, `type_identifier` for type aliases
+- **Lua** (`.lua`) — chunks `function_declaration`; handles `method_index_expression` for `Obj:method()` syntax
+- **Elixir** (`.ex`, `.exs`) — custom `should_chunk_node()` and `chunk_code()` because Elixir uses `call` nodes for all definitions (`defmodule`, `def`, `defp`, `defmacro`, `defprotocol`, `defimpl`)
+- **Haskell** (`.hs`) — chunks `function`, `signature`, `data_type`, `class`, `instance`, `type_synomym` (grammar typo is intentional — matches tree-sitter-haskell), `newtype`
+
+**Note:** Dart (`tree-sitter-dart`), Protobuf (`tree-sitter-protobuf`) are not available on PyPI. Deferred until standalone packages are published.
+
+### Files Created
+
+| File | Language |
+|------|----------|
+| `chunking/languages/ruby_chunker.py` | Ruby |
+| `chunking/languages/php_chunker.py` | PHP |
+| `chunking/languages/swift_chunker.py` | Swift |
+| `chunking/languages/sql_chunker.py` | SQL |
+| `chunking/languages/hcl_chunker.py` | Terraform/HCL |
+| `chunking/languages/scala_chunker.py` | Scala |
+| `chunking/languages/lua_chunker.py` | Lua |
+| `chunking/languages/elixir_chunker.py` | Elixir |
+| `chunking/languages/haskell_chunker.py` | Haskell |
+
+### Test Data Added
+
+12 new test data files in `tests/test_data/multi_language/`: `example.sh`, `example.html`, `example.css`, `calculator.rb`, `Calculator.php`, `Calculator.swift`, `example.sql`, `main.tf`, `Calculator.scala`, `calculator.lua`, `calculator.ex`, `Calculator.hs`
+
+### Registration Files Updated
+
+- `chunking/available_languages.py` — all 12 new languages registered
+- `chunking/languages/__init__.py` — all new LANGUAGE_MAP entries
+- `chunking/multi_language_chunker.py` — chunk_type_map + declaration_kind entries for all new node types
+- `chunking/base_chunker.py` — `_CONTAINER_NODE_TYPES` expanded with Ruby, PHP, Swift, Scala, Haskell containers
+- `pyproject.toml` — 9 new tree-sitter dependencies (ruby, php, swift, sql, hcl, scala, lua, elixir, haskell)
+
+### Known Limitations
+
+- **PowerShell, Dart, Vue, Protobuf** — no standalone PyPI packages for their tree-sitter grammars. Graceful degradation: `available_languages.py` uses try/except imports, so missing grammars are silently skipped.
+- **SQL** — `create_function`, `create_type`, `create_trigger` are registered but tree-sitter-sql doesn't parse them into structured nodes (they produce `ERROR` nodes). Only `create_table`, `create_view`, `create_index` are effectively chunked.
+
+### Test Results
+
+- 484/484 full suite tests pass (0 regressions)
+
+---
+
 ## Summary — Prioritized Action Items
 
 ### Critical / Do First
 1. ~~**Add project-level file lock for indexing** — prevents index corruption from concurrent agents (Item 1)~~ **DONE (Session A)**
-2. **Fix Java record/sealed class support** — your codebase uses JDK 21+ (Item 3)
+2. ~~**Fix Java record/sealed class support** — your codebase uses JDK 21+ (Item 3)~~ **DONE (Session B)**
 
 ### Important / Do Next
-3. **Add Tier 1 languages** — Shell/Bash, PowerShell, HTML, CSS (Item 2)
+3. ~~**Add Tier 1 languages** — Shell/Bash, HTML, CSS (Item 2)~~ **DONE (Session B)** (PowerShell deferred — no PyPI package)
 4. **Add code-aware query preprocessing** — CamelCase/snake_case splitting for BM25 (Item 4)
 5. ~~**Add global embedding semaphore** — resource protection across MCP instances (Item 1)~~ **DONE (Session A)**
 
 ### Nice-to-Have / Do Later
-6. **Add Tier 2 languages** — Angular (via HTML + optional dedicated grammar), Ruby, PHP, Swift, SQL, Vue (Item 2)
-7. **Add Go generics metadata** (Item 3)
-8. **Improve TOML line accuracy** — either better regex or tree-sitter-toml (Item 3)
+6. ~~**Add Tier 2 languages** — Ruby, PHP, Swift, SQL (Item 2)~~ **DONE (Session D)** (Angular/Vue deferred — no PyPI packages)
+7. ~~**Add Go generics metadata** (Item 3)~~ **DONE (Session B)**
+8. ~~**Improve TOML line accuracy** — better regex with comment skipping, dotted keys, quote stripping (Item 3)~~ **DONE (Session B)**
 9. **Make refine_factor configurable** (Item 4)
 10. **Investigate BM25 parameter tuning** — research task (Item 4)
 11. **Resource-aware batch sizing** for embeddings (Item 1)
-12. **Add Tier 3 languages** — Terraform/HCL, Scala, Dart, Lua, etc. (Item 2)
+12. ~~**Add Tier 3 languages** — Terraform/HCL, Scala, Lua, Elixir, Haskell (Item 2)~~ **DONE (Session D)** (Dart/Protobuf deferred — no PyPI packages)

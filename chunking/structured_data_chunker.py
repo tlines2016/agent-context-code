@@ -353,18 +353,23 @@ class StructuredDataChunker:
                 for key in re.findall(r'"([^"\\]+)"\s*:', line):
                     line_index.setdefault(key, line_number)
             elif language == 'toml':
+                if stripped.startswith('#'):
+                    continue
                 if stripped.startswith('[') and stripped.endswith(']'):
                     # strip('[]') removes all leading/trailing bracket chars (covers [[…]])
                     # then .strip() removes any padding spaces inside the brackets.
                     table_name = stripped.strip('[]').strip()
-                    for token in filter(None, (t.strip() for t in table_name.split('.'))):
+                    for token in filter(None, (t.strip().strip('\'"') for t in table_name.split('.'))):
                         line_index.setdefault(token, line_number)
                     if table_name:
                         line_index.setdefault(table_name, line_number)
                 elif '=' in stripped:
                     key = stripped.split('=', 1)[0].strip().strip('\'"')
                     if key:
+                        # Handle dotted keys (e.g., "tool.ruff.line-length = 100")
                         line_index.setdefault(key, line_number)
+                        for token in filter(None, (t.strip().strip('\'"') for t in key.split('.'))):
+                            line_index.setdefault(token, line_number)
 
         return line_index
 

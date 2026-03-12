@@ -92,4 +92,82 @@ def get_availiable_language():
     except ImportError:
         logger.debug("tree-sitter-kotlin not installed")
 
+    # --- Session B: Tier 1 languages ---
+
+    try:
+        import tree_sitter_bash as tsbash
+        res['bash'] = Language(tsbash.language())
+    except ImportError:
+        logger.debug("tree-sitter-bash not installed")
+
+    try:
+        import tree_sitter_html as tshtml
+        res['html'] = Language(tshtml.language())
+    except ImportError:
+        logger.debug("tree-sitter-html not installed")
+
+    try:
+        import tree_sitter_css as tscss
+        res['css'] = Language(tscss.language())
+    except ImportError:
+        logger.debug("tree-sitter-css not installed")
+
+    # --- Session D: Tier 2 languages ---
+
+    try:
+        import tree_sitter_ruby as tsruby
+        res['ruby'] = Language(tsruby.language())
+    except ImportError:
+        logger.debug("tree-sitter-ruby not installed")
+
+    try:
+        import tree_sitter_php as tsphp
+        res['php'] = Language(tsphp.language_php())
+    except ImportError:
+        logger.debug("tree-sitter-php not installed")
+
+    try:
+        import tree_sitter_swift as tsswift
+        res['swift'] = Language(tsswift.language())
+    except ImportError:
+        logger.debug("tree-sitter-swift not installed")
+
+    try:
+        import tree_sitter_sql as tssql
+        res['sql'] = Language(tssql.language())
+    except ImportError:
+        logger.debug("tree-sitter-sql not installed")
+
+    # --- Session D: Tier 3 languages ---
+
+    try:
+        import tree_sitter_hcl as tshcl
+        res['hcl'] = Language(tshcl.language())
+    except ImportError:
+        logger.debug("tree-sitter-hcl not installed")
+
+    try:
+        import tree_sitter_scala as tsscala
+        res['scala'] = Language(tsscala.language())
+    except ImportError:
+        logger.debug("tree-sitter-scala not installed")
+
+    try:
+        import tree_sitter_lua as tslua
+        res['lua'] = Language(tslua.language())
+    except ImportError:
+        logger.debug("tree-sitter-lua not installed")
+
+    try:
+        import tree_sitter_elixir as tselixir
+        res['elixir'] = Language(tselixir.language())
+    except ImportError:
+        logger.debug("tree-sitter-elixir not installed")
+
+    try:
+        import tree_sitter_haskell as tshaskell
+        res['haskell'] = Language(tshaskell.language())
+    except ImportError:
+        logger.debug("tree-sitter-haskell not installed")
+
     return res

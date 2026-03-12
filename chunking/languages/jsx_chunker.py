@@ -26,9 +26,16 @@ class JSXChunker(JavaScriptChunker):
 
         # Check if it's a React component (function returning JSX)
         if node.type in ['function_declaration', 'arrow_function', 'function']:
-            # Simple heuristic: check if body contains JSX
-            body_text = self.get_node_text(node, source)
-            if '<' in body_text and ('jsx' in body_text.lower() or 'return' in body_text):
+            if self._has_jsx_children(node):
                 metadata['is_component'] = True
 
         return metadata
+
+    def _has_jsx_children(self, node) -> bool:
+        """Check if node contains JSX elements in its subtree."""
+        for child in node.children:
+            if child.type in ('jsx_element', 'jsx_self_closing_element'):
+                return True
+            if self._has_jsx_children(child):
+                return True
+        return False

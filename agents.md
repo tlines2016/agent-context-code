@@ -94,11 +94,33 @@ Comments should explain:
 
 Avoid redundant comments on straightforward assignments or control flow.
 
+## Local Development Environment (Machine-Specific)
+
+### GPU PyTorch (Critical for this machine)
+
+This development machine has an **NVIDIA GeForce RTX 5080**. PyTorch CUDA support requires the `cu128` extra on **every** `uv run` and `uv sync` command:
+
+```bash
+# CORRECT — uses GPU torch (RTX 5080 CUDA 12.8)
+uv run --extra cu128 python <script>
+uv run --extra cu128 --extra test python -m pytest tests/
+
+# WRONG — reverts torch to CPU-only, embedding will be extremely slow
+uv run python <script>
+```
+
+**Why**: `pyproject.toml` routes `torch` to the CUDA index only when `--extra cu128` is active. Without it, `torch>=2.10.0` resolves from PyPI (CPU-only wheels). See `docs/gpu-install-investigation.md` for the full investigation and open fix items.
+
 ## Useful Validation Commands
 
 ```bash
-uv run python tests/run_tests.py
-uv run python -m pytest tests/unit/test_cli.py -v
-uv run python -m pytest tests/test_lancedb_schema.py -v
-uv run python -m pytest tests/test_unsloth_embedder.py -v
+# Full test suite (GPU + test deps)
+uv run --extra cu128 --extra test python -m pytest tests/ -v
+
+# Individual test files
+uv run --extra cu128 --extra test python -m pytest tests/unit/test_cli.py -v
+uv run --extra cu128 --extra test python -m pytest tests/test_lancedb_schema.py -v
+
+# Sync dependencies after pyproject.toml changes
+uv sync --extra cu128 --extra test
 ```

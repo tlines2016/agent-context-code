@@ -45,4 +45,24 @@ class GoChunker(LanguageChunker):
                             break
                     break
 
+        # Extract generic type parameters (Go 1.18+)
+        if node.type in ('function_declaration', 'method_declaration', 'type_declaration'):
+            target = node
+            # For type_declaration, look inside type_spec
+            if node.type == 'type_declaration':
+                for child in node.children:
+                    if child.type == 'type_spec':
+                        target = child
+                        break
+            for child in target.children:
+                if child.type == 'type_parameter_list':
+                    metadata['has_generics'] = True
+                    params = []
+                    for param in child.children:
+                        if param.type == 'type_parameter_declaration':
+                            params.append(self.get_node_text(param, source))
+                    if params:
+                        metadata['generic_params'] = params
+                    break
+
         return metadata

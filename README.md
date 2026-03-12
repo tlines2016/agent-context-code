@@ -55,7 +55,7 @@ The canonical repository is
 - **100% local** — Embeddings generated on-device, LanceDB embedded database (think SQLite for vectors), zero API calls, zero uploads.
 - **Incremental indexing** — A Merkle DAG tracks file-level content hashes. Only modified files get re-indexed, so re-indexing a large repo after a small change takes seconds.
 - **Graph-enriched results** — Search results include structural context: class hierarchy, method containment, and cross-file inheritance.
-- **23 file types** — Python, JS/TS, Go, Rust, Java, Kotlin, C/C++, C#, Svelte, Markdown, YAML, TOML, and JSON.
+- **29 languages, 39 file extensions** — Python, JS/TS/JSX/TSX, Go, Rust, Java, Kotlin, C/C++, C#, Svelte, Bash/Shell, HTML, CSS, Ruby, PHP, Swift, SQL, Terraform/HCL, Scala, Lua, Elixir, Haskell, Markdown, YAML, TOML, and JSON.
 - **Optional reranking** — Two-stage retrieval with a cross-encoder second pass for higher-precision results when you need them.
 - **Lightweight default model** — Ships with mxbai-embed-xsmall-v1 (22.7M params, 384-dim). Non-gated, CPU-optimised, no GPU required. Indexes large repos fast.
 
@@ -436,19 +436,45 @@ support MCP.
 
 ## Supported Languages
 
-The chunker supports 23 file extensions across:
+The chunker supports 39 file extensions across 29 languages and formats:
+
+### Programming Languages (25)
 
 - Python (`.py`)
-- JavaScript and TypeScript (`.js`, `.jsx`, `.ts`, `.tsx`)
-- Java and Kotlin (`.java`, `.kt`, `.kts`)
-- Go (`.go`) and Rust (`.rs`)
-- C, C++, and C# (`.c`, `.cpp`, `.cc`, `.cxx`, `.c++`, `.cs`)
+- JavaScript (`.js`), JSX (`.jsx`), TypeScript (`.ts`), TSX (`.tsx`)
+- Go (`.go`)
+- Rust (`.rs`)
+- Java (`.java`)
+- Kotlin (`.kt`, `.kts`)
+- C (`.c`)
+- C++ (`.cpp`, `.cc`, `.cxx`, `.c++`)
+- C# (`.cs`)
 - Svelte (`.svelte`)
+- Bash / Shell (`.sh`, `.bash`, `.zsh`)
+- HTML (`.html`, `.htm`)
+- CSS (`.css`)
+- Ruby (`.rb`)
+- PHP (`.php`)
+- Swift (`.swift`)
+- SQL (`.sql`)
+- Terraform / HCL (`.tf`, `.tfvars`, `.hcl`)
+- Scala (`.scala`, `.sc`)
+- Lua (`.lua`)
+- Elixir (`.ex`, `.exs`)
+- Haskell (`.hs`)
+
+### Structured Data (3)
+
+- YAML (`.yaml`, `.yml`)
+- TOML (`.toml`)
+- JSON (`.json`)
+
+### Documentation
+
 - Markdown (`.md`)
-- YAML, TOML, and JSON (`.yaml`, `.yml`, `.toml`, `.json`)
 
 All programming languages use tree-sitter for AST-aware parsing.
-Configuration files (YAML, TOML, JSON) use a structured key-path parser
+Structured data files (YAML, TOML, JSON) use a structured key-path parser
 that chunks by top-level sections.
 
 ## System Requirements

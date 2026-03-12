@@ -226,52 +226,100 @@ class MultiLanguageChunker:
                 'function_declaration': 'function',
                 'function_definition': 'function',
                 'arrow_function': 'function',
-                'function': 'function',
-                'function_item': 'function',  # Rust
-                'method_declaration': 'method',  # Go, Java
+                'function': 'function',            # JS anonymous, Haskell
+                'function_item': 'function',       # Rust
+                'method_declaration': 'method',    # Go, Java, PHP
                 'method_definition': 'method',
-                'class_declaration': 'class',
-                'class_definition': 'class',
-                'class_specifier': 'class',  # C++
+                'class_declaration': 'class',      # Java, C#, C++, Swift
+                'class_definition': 'class',       # Python, Scala
+                'class_specifier': 'class',        # C++
                 'interface_declaration': 'interface',
                 'type_alias_declaration': 'type',
-                'type_declaration': 'type',  # Go
-                'enum_declaration': 'enum',
-                'enum_specifier': 'enum',  # C
-                'enum_item': 'enum',  # Rust
-                'struct_declaration': 'struct',  # C#
-                'struct_specifier': 'struct',  # C/C++
-                'struct_item': 'struct',  # Rust
-                'union_specifier': 'union',  # C/C++
-                'namespace_definition': 'namespace',  # C++
+                'type_declaration': 'type',        # Go
+                'enum_declaration': 'enum',        # Java, C#, PHP
+                'enum_specifier': 'enum',          # C
+                'enum_item': 'enum',               # Rust
+                'struct_declaration': 'struct',    # C#
+                'struct_specifier': 'struct',      # C/C++
+                'struct_item': 'struct',           # Rust
+                'union_specifier': 'union',        # C/C++
+                'namespace_definition': 'namespace',  # C++, PHP
                 'namespace_declaration': 'namespace',  # C#
-                'impl_item': 'impl',  # Rust
-                'trait_item': 'trait',  # Rust
-                'mod_item': 'module',  # Rust
-                'macro_definition': 'macro',  # Rust
+                'impl_item': 'impl',               # Rust
+                'trait_item': 'trait',              # Rust
+                'mod_item': 'module',              # Rust
+                'macro_definition': 'macro',       # Rust
                 'constructor_declaration': 'constructor',  # Java/C#
-                'secondary_constructor': 'constructor',  # Kotlin
-                'anonymous_initializer': 'init',  # Kotlin init { } blocks
-                'destructor_declaration': 'destructor',  # C#
-                'property_declaration': 'property',  # C#
-                'object_declaration': 'object',  # Kotlin
-                'companion_object': 'object',  # Kotlin
-                'event_declaration': 'event',  # C#
+                'secondary_constructor': 'constructor',    # Kotlin
+                'anonymous_initializer': 'init',   # Kotlin init { } blocks
+                'destructor_declaration': 'destructor',    # C#
+                'property_declaration': 'property',        # C#, Swift
+                'object_declaration': 'object',    # Kotlin
+                'companion_object': 'object',      # Kotlin
+                'event_declaration': 'event',      # C#
                 'template_declaration': 'template',  # C++
-                'concept_definition': 'concept',  # C++
+                'concept_definition': 'concept',   # C++
                 'annotation_type_declaration': 'annotation',  # Java
-                'script_element': 'script',  # Svelte
-                'style_element': 'style',  # Svelte
-                'section': 'section',  # Markdown
-                'preamble': 'preamble',  # Markdown
-                'document': 'document',  # Markdown
+                'script_element': 'script',        # Svelte
+                'style_element': 'style',          # Svelte
+                'section': 'section',              # Markdown
+                'preamble': 'preamble',            # Markdown
+                'document': 'document',            # Markdown
+                # Java 16+
+                'record_declaration': 'record',
+                # Ruby
+                'method': 'method',
+                'singleton_method': 'method',
+                'module': 'module',
+                'class': 'class',                  # Ruby, Haskell type class
+                # PHP
+                'trait_declaration': 'trait',
+                # Swift
+                'protocol_declaration': 'protocol',
+                'init_declaration': 'constructor',
+                # CSS
+                'rule_set': 'style_rule',
+                'media_statement': 'media_query',
+                'keyframes_statement': 'keyframes',
+                'import_statement': 'import',
+                'supports_statement': 'supports',
+                'charset_statement': 'charset',
+                # HTML (elements chunked via custom chunk_code)
+                'element': 'element',
+                # SQL
+                'create_table': 'table',
+                'create_view': 'view',
+                'create_index': 'index',
+                'create_function': 'function',
+                'create_type': 'type',
+                'create_trigger': 'trigger',
+                # HCL/Terraform
+                'block': 'block',
+                # Scala
+                'object_definition': 'object',
+                'trait_definition': 'trait',
+                'val_definition': 'property',
+                'var_definition': 'property',
+                'type_definition': 'type',
+                # Lua — uses function_declaration (already mapped)
+                # Elixir — uses 'call' with declaration_kind override
+                'call': 'function',
+                # Haskell
+                'signature': 'signature',
+                'data_type': 'type',
+                'instance': 'instance',
+                'type_synomym': 'type',
+                'newtype': 'type',
             }
             
             chunk_type = chunk_type_map.get(tchunk.node_type, tchunk.node_type)
             declaration_kind = tchunk.metadata.get('declaration_kind')
             # Some grammars reuse a broad node type (for example Kotlin class_declaration)
             # and expose the more specific kind in metadata instead.
-            if declaration_kind in {'interface', 'enum', 'object', 'property', 'init'}:
+            if declaration_kind in {'interface', 'enum', 'object', 'property', 'init',
+                                     'record', 'module', 'trait', 'protocol',
+                                     'signature', 'instance', 'type', 'macro',
+                                     'function', 'struct', 'impl'}:
                 chunk_type = declaration_kind
             
             # Extract parent name and adjust chunk type for methods
