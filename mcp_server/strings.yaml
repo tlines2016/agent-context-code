@@ -13,17 +13,6 @@ tools:
     Example: search_code("retry logic with exponential backoff", k=10, file_pattern="*.py")
     Cross-project: search_code("auth middleware", project_path="/other/repo")
 
-  index_directory: |
-    Index a codebase for semantic search. Creates isolated per-project storage. Run before searching a new project.
-    USE WHEN: A project has never been indexed, or you want to force a full re-index.
-    DO NOT USE WHEN: The project is already indexed — search_code auto-refreshes stale indexes before each search.
-    Key args:
-      directory_path (required): absolute path to the project root.
-      project_name, file_patterns: optional display name and glob includes (sensible defaults).
-      incremental: False to force full re-index (default True).
-      max_file_bytes: max size for structured files (YAML/TOML/JSON, default 10MB). Skipped files reported in response. Does not affect source code.
-    Example: index_directory("/home/user/my-project")
-
   find_similar_code: |
     Find code structurally or functionally similar to a known chunk. Returns ranked matches by embedding distance.
     USE WHEN: You have a chunk_id from search_code and want duplicates, alternative implementations, or refactoring candidates.
@@ -32,6 +21,29 @@ tools:
       chunk_id (required): identifier from a search_code result.
       k: number of similar chunks to return (default 5).
     Example: find_similar_code("src/auth.py::authenticate_user::0", k=10)
+
+  get_graph_context: |
+    Deep structural traversal around a code chunk. Returns containment (class→method) and inheritance (child→parent) relationships within max_depth hops.
+    USE WHEN: You have a chunk_id from search_code and need to understand how it connects to surrounding code (parent class, sibling methods, inheritance chain).
+    DO NOT USE WHEN: You want to find code by meaning — use search_code (which already includes lightweight graph hints).
+    Key args:
+      chunk_id (required): identifier from a search_code result.
+      max_depth: traversal depth (default 2, keep small — 1–3 recommended).
+      project_path: query a different project's graph without switching context.
+    Returns found=true with symbols/edges, or found=false with miss_reason when chunk is absent from the graph.
+    Example: get_graph_context(chunk_id="src/auth.py::AuthService::0", max_depth=2)
+  
+  index_directory: |
+    Index a codebase for semantic search. Creates isolated per-project storage. Run before searching a new project.
+    USE WHEN: A project has never been indexed, or you want to force a full re-index.
+    DO NOT USE WHEN: The project is already indexed — search_code auto-refreshes stale indexes before each search.
+    .gitignore and .cursorignore files are automatically respected — matching paths are excluded from the index. Nested per-directory .gitignore files are also honored. No configuration needed.
+    Key args:
+      directory_path (required): absolute path to the project root.
+      project_name, file_patterns: optional display name and glob includes (sensible defaults).
+      incremental: False to force full re-index (default True).
+      max_file_bytes: max size for structured files (YAML/TOML/JSON, default 10MB). Skipped files reported in response. Does not affect source code.
+    Example: index_directory("/home/user/my-project")
 
   get_index_status: |
     Get index health, sync status, and metadata for the active project.
@@ -57,17 +69,6 @@ tools:
     DESTRUCTIVE: Permanently deletes the active project's vector index, graph, and snapshot metadata. Cannot be undone — re-indexing required to restore search.
     USE WHEN: Index is corrupted or you need a clean slate.
     Returns: per-store outcomes (vector_cleared, graph_cleared, snapshot_cleared).
-
-  get_graph_context: |
-    Deep structural traversal around a code chunk. Returns containment (class→method) and inheritance (child→parent) relationships within max_depth hops.
-    USE WHEN: You have a chunk_id from search_code and need to understand how it connects to surrounding code (parent class, sibling methods, inheritance chain).
-    DO NOT USE WHEN: You want to find code by meaning — use search_code (which already includes lightweight graph hints).
-    Key args:
-      chunk_id (required): identifier from a search_code result.
-      max_depth: traversal depth (default 2, keep small — 1–3 recommended).
-      project_path: query a different project's graph without switching context.
-    Returns found=true with symbols/edges, or found=false with miss_reason when chunk is absent from the graph.
-    Example: get_graph_context(chunk_id="src/auth.py::AuthService::0", max_depth=2)
 
 help: |
   # Code Search Tools — Quick Reference

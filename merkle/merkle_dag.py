@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from merkle.ignore_rules import IgnoreRules
+
 
 @dataclass
 class MerkleNode:
@@ -46,47 +48,52 @@ class MerkleDAG:
     
     def __init__(self, root_path: str):
         """Initialize Merkle DAG for a directory tree.
-        
+
         Args:
             root_path: Root directory to track
         """
         self.root_path = Path(root_path).resolve()
         self.nodes: Dict[str, MerkleNode] = {}
         self.root_node: Optional[MerkleNode] = None
-        self.ignore_patterns: Set[str] = {
-            '__pycache__', '.git', '.hg', '.svn',
-            '.venv', 'venv', 'env', '.env', '.direnv',
-            'node_modules', '.pnpm-store', '.yarn',
-            '.pytest_cache', '.mypy_cache', '.ruff_cache', '.pytype', '.ipynb_checkpoints',
-            'build', 'dist', 'out', 'public',
-            '.next', '.nuxt', '.svelte-kit', '.angular', '.astro', '.vite',
-            '.cache', '.parcel-cache', '.turbo',
-            'coverage', '.coverage', '.nyc_output',
-            '.gradle', '.idea', '.vscode', '.docusaurus', '.vercel', '.serverless', '.terraform', '.mvn', '.tox',
-            'target', 'bin', 'obj',
-            '*.pyc', '*.pyo', '.DS_Store', 'Thumbs.db'
-        }
+        # Legacy set kept for backward compat — ChangeDetector adds runtime
+        # patterns (e.g. snapshot directory) via ``dag.ignore_patterns.add()``.
+        self.ignore_patterns: Set[str] = set()
+        self._ignore_rules = IgnoreRules(self.root_path)
     
     def should_ignore(self, path: Path) -> bool:
         """Check if a path should be ignored.
-        
+
+        Checks dynamic runtime patterns first (e.g. snapshot dir added by
+        ChangeDetector), then delegates to the layered IgnoreRules engine.
+
         Args:
             path: Path to check
-            
+
         Returns:
             True if path should be ignored
         """
         name = path.name
-         
-        # Check exact matches and patterns
+
+        # Dynamic runtime patterns (legacy set)
         for pattern in self.ignore_patterns:
             if pattern.startswith('*'):
                 if name.endswith(pattern[1:]):
                     return True
             elif name == pattern:
                 return True
-        
-        return False
+
+        # Compute forward-slash relative path for pathspec matching
+        try:
+            rel = path.relative_to(self.root_path)
+            relative_path = str(rel).replace("\\", "/")
+        except ValueError:
+            relative_path = name
+
+        # Append trailing slash for directories so directory-only patterns match
+        if path.is_dir():
+            relative_path += "/"
+
+        return self._ignore_rules.should_ignore(path, relative_path)
     
     def hash_file(self, file_path: Path) -> Tuple[str, int]:
         """Calculate SHA-256 hash of a file.
@@ -168,7 +175,8 @@ class MerkleDAG:
         elif path.is_dir():
             children = []
             child_hashes = []
-            
+
+            self._ignore_rules.enter_directory(path)
             try:
                 for child_path in sorted(path.iterdir()):
                     child_node = self.build_node(child_path, base_path)
@@ -177,6 +185,8 @@ class MerkleDAG:
                         child_hashes.append(child_node.hash)
             except (PermissionError, OSError):
                 pass
+            finally:
+                self._ignore_rules.leave_directory(path)
                 
             dir_hash = self.hash_directory(path, child_hashes)
             node = MerkleNode(
@@ -280,13 +290,13 @@ class MerkleDAG:
     
     def get_stats(self) -> Dict:
         """Get statistics about the DAG.
-        
+
         Returns:
             Dictionary with statistics
         """
         file_nodes = [n for n in self.nodes.values() if n.is_file]
         dir_nodes = [n for n in self.nodes.values() if not n.is_file]
-        
+
         return {
             'total_nodes': len(self.nodes),
             'file_count': len(file_nodes),
@@ -294,3 +304,11 @@ class MerkleDAG:
             'total_size': sum(n.size for n in file_nodes),
             'root_hash': self.get_root_hash()
         }
+
+    def get_ignore_stats(self) -> Dict:
+        """Return ignore counters from the IgnoreRules engine."""
+        return self._ignore_rules.get_stats()
+
+    def get_ignore_signature(self) -> Dict:
+        """Return content hashes of .gitignore/.cursorignore for cache invalidation."""
+        return self._ignore_rules.get_ignore_signature()

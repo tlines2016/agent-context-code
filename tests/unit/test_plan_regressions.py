@@ -41,7 +41,12 @@ def _make_indexer_with_mocks(*, code_graph=None, has_snapshot=True):
     chunker.chunk_file.return_value = [MagicMock(content="x")]
     snapshot_manager = MagicMock()
     snapshot_manager.has_snapshot.return_value = has_snapshot
-    snapshot_manager.load_metadata.return_value = {"indexing_config": {"sig": "1"}}
+    snapshot_manager.load_metadata.return_value = {
+        "indexing_config": {
+            "sig": "1",
+            "ignore_signature": {"gitignore_hash": None, "cursorignore_hash": None},
+        }
+    }
 
     if code_graph is None:
         code_graph = MagicMock()

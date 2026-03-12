@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from merkle.change_detector import ChangeDetector, FileChanges
+from merkle.ignore_rules import IgnoreRules
 from merkle.merkle_dag import MerkleDAG
 from merkle.snapshot_manager import SnapshotManager
 from chunking.multi_language_chunker import MultiLanguageChunker
@@ -39,6 +40,7 @@ class IncrementalIndexResult:
     graph_stats: Dict = field(default_factory=dict)
     graph_sync_ok: bool = True
     graph_sync_error: Optional[str] = None
+    ignore_stats: Dict = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -60,6 +62,8 @@ class IncrementalIndexResult:
             result['graph_sync_error'] = self.graph_sync_error
         if self.graph_stats:
             result['graph_stats'] = self.graph_stats
+        if self.ignore_stats:
+            result['ignore_stats'] = self.ignore_stats
         return result
 
 
@@ -142,7 +146,12 @@ class IncrementalIndexer:
             project_name = Path(project_path).name
 
         indexing_config = self.chunker.get_indexing_config_signature()
-        
+
+        # Merge ignore-file signatures so .gitignore/.cursorignore changes
+        # trigger a full reindex via the existing config comparison.
+        ignore_sig = IgnoreRules.compute_signature(Path(project_path))
+        indexing_config = {**(indexing_config or {}), "ignore_signature": ignore_sig}
+
         try:
             # Check if we should do full index
             if force_full or not self.snapshot_manager.has_snapshot(project_path):
@@ -160,7 +169,8 @@ class IncrementalIndexer:
             # Detect changes
             logger.info(f"Detecting changes in {project_name}")
             changes, current_dag = self.detect_changes(project_path)
-            
+            ignore_stats = current_dag.get_ignore_stats()
+
             if not changes.has_changes():
                 logger.info(f"No changes detected in {project_name}")
                 return IncrementalIndexResult(
@@ -170,7 +180,8 @@ class IncrementalIndexer:
                     chunks_added=0,
                     chunks_removed=0,
                     time_taken=time.time() - start_time,
-                    success=True
+                    success=True,
+                    ignore_stats=ignore_stats,
                 )
             
             # Log changes
@@ -265,6 +276,7 @@ class IncrementalIndexer:
                 graph_stats=graph_stats,
                 graph_sync_ok=graph_sync_ok,
                 graph_sync_error=graph_sync_error,
+                ignore_stats=ignore_stats,
             )
             
         except Exception as e:
@@ -309,6 +321,7 @@ class IncrementalIndexer:
             # Build DAG for all files
             dag = MerkleDAG(project_path)
             dag.build()
+            ignore_stats = dag.get_ignore_stats()
             all_files = dag.get_all_files()
             
             # Filter supported files
@@ -440,8 +453,9 @@ class IncrementalIndexer:
                 graph_stats=graph_stats,
                 graph_sync_ok=graph_sync_ok,
                 graph_sync_error=graph_sync_error,
+                ignore_stats=ignore_stats,
             )
-            
+
         except Exception as e:
             logger.error(f"Full indexing failed: {e}")
             return IncrementalIndexResult(

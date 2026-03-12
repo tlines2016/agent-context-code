@@ -664,6 +664,9 @@ class CodeSearchServer:
             if result.graph_stats:
                 response["graph_stats"] = result.graph_stats
 
+            if result.ignore_stats:
+                response["ignore_stats"] = result.ignore_stats
+
             if result.skipped_files:
                 response["skipped_file_count"] = len(result.skipped_files)
                 response["skipped_files"] = result.skipped_files

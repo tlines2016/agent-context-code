@@ -132,6 +132,53 @@ class TestMerkleDAG(TestCase):
         # Regular files should be present
         assert 'README.md' in normalized
 
+    def test_gitignore_respected(self):
+        """Test that .gitignore rules are respected during DAG building."""
+        self.create_test_files()
+
+        # Create a .gitignore that excludes *.log files
+        (self.test_path / '.gitignore').write_text('*.log\n')
+
+        # Create a log file that should be excluded
+        (self.test_path / 'debug.log').write_text('debug output')
+
+        dag = MerkleDAG(self.temp_dir)
+        dag.build()
+
+        all_files = dag.get_all_files()
+        normalized = _normalize_paths(all_files)
+
+        # debug.log should be excluded by .gitignore
+        assert 'debug.log' not in normalized
+
+        # Regular files should still be present
+        assert 'src/main.py' in normalized
+
+        # .gitignore itself should be included (it's a tracked file)
+        assert '.gitignore' in normalized
+
+        # Ignore stats should reflect the exclusion
+        stats = dag.get_ignore_stats()
+        assert stats['ignored_by_gitignore'] >= 1
+
+    def test_cursorignore_respected(self):
+        """Test that .cursorignore rules are respected during DAG building."""
+        self.create_test_files()
+
+        (self.test_path / '.cursorignore').write_text('tests/\n')
+
+        dag = MerkleDAG(self.temp_dir)
+        dag.build()
+
+        all_files = dag.get_all_files()
+        normalized = _normalize_paths(all_files)
+
+        # tests/ dir should be excluded by .cursorignore
+        assert 'tests/test_main.py' not in normalized
+
+        # Other files should still be present
+        assert 'src/main.py' in normalized
+
     def test_dag_serialization(self):
         """Test DAG to/from dict conversion."""
         self.create_test_files()

@@ -66,6 +66,7 @@ dependencies = [
     # transformers: pinned explicitly for Qwen3 model support (satisfied
     # transitively by sentence-transformers, but documented here for clarity).
     "transformers>=4.51.0",
+    "pathspec>=0.12.1",
     "tree-sitter>=0.20.0",
     "tree-sitter-c>=0.24.1",
     "tree-sitter-c-sharp>=0.23.1",

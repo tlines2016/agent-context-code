@@ -17,7 +17,12 @@ def _make_indexer_with_mocks():
     chunker.get_indexing_config_signature.return_value = {"sig": "1"}
     snapshot_manager = MagicMock()
     snapshot_manager.has_snapshot.return_value = True
-    snapshot_manager.load_metadata.return_value = {"indexing_config": {"sig": "1"}}
+    snapshot_manager.load_metadata.return_value = {
+        "indexing_config": {
+            "sig": "1",
+            "ignore_signature": {"gitignore_hash": None, "cursorignore_hash": None},
+        }
+    }
     code_graph = MagicMock()
 
     inc = IncrementalIndexer(
