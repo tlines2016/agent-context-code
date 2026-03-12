@@ -2,7 +2,7 @@ param(
     [string]$RepoUrl = "https://github.com/tlines2016/agent-context-code",
     [string]$ProjectDir = "$env:LOCALAPPDATA\agent-context-code",
     [string]$StorageDir = $(if ($env:CODE_SEARCH_STORAGE) { $env:CODE_SEARCH_STORAGE } else { "$env:USERPROFILE\.agent_code_search" }),
-    [string]$ModelName = $(if ($env:CODE_SEARCH_MODEL) { $env:CODE_SEARCH_MODEL } else { "Qwen/Qwen3-Embedding-0.6B" })
+    [string]$ModelName = $(if ($env:CODE_SEARCH_MODEL) { $env:CODE_SEARCH_MODEL } else { "mixedbread-ai/mxbai-embed-xsmall-v1" })
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,7 +64,13 @@ if (Test-Path (Join-Path $ProjectDir ".git")) {
 
     if ($hasChanges) {
         Write-Warning "You have uncommitted changes in $ProjectDir"
-        $choice = Read-Host "Options: [U]pdate anyway (stash changes), [K]eep current version, [D]elete and reinstall"
+        $isInteractive = [Environment]::UserInteractive -and -not ([Console]::IsInputRedirected)
+        if ($isInteractive) {
+            $choice = Read-Host "Options: [U]pdate anyway (stash changes), [K]eep current version, [D]elete and reinstall"
+        } else {
+            Write-Host "Non-interactive mode: auto-selecting stash-and-update"
+            $choice = "U"
+        }
         if ([string]::IsNullOrWhiteSpace($choice)) {
             $choice = "U"
         }
@@ -112,6 +118,14 @@ else {
         New-Item -ItemType Directory -Force -Path $projectParent | Out-Null
     }
     if (Test-Path $ProjectDir) {
+        # Safety: verify the directory looks like a previous install before deleting
+        $serverPath = Join-Path $ProjectDir "mcp_server\server.py"
+        $cliPath = Join-Path $ProjectDir "scripts\cli.py"
+        $looksLikeInstall = (Test-Path $serverPath) -and (Test-Path $cliPath)
+        $dirName = [System.IO.Path]::GetFileName($ProjectDir).ToLowerInvariant()
+        if (-not $looksLikeInstall -and $dirName -ne "agent-context-code") {
+            throw "ERROR: '$ProjectDir' exists but does not look like an AGENT Context Local install. Remove it manually or choose a different -ProjectDir."
+        }
         Remove-Item -Recurse -Force $ProjectDir
     }
     git clone $RepoUrl $ProjectDir
@@ -132,19 +146,118 @@ else {
     $depsStatus = "skipped"
 }
 
-# We keep GPU detection as guidance only.
-# Why: search backend is LanceDB, so installer should not perform FAISS package mutations.
+# ── GPU-accelerated PyTorch installation ──────────────────────────────────
+# Detect GPU vendor and install the matching PyTorch build so embeddings
+# run on the accelerator instead of CPU.
+#
+# Supported:  NVIDIA (CUDA), AMD (ROCm on Windows via HIP), CPU fallback
+# Apple Silicon is macOS-only and handled by install.sh.
+$gpuVendor = "cpu"
+$torchIndexUrl = ""
+$gpuStatus = "cpu-only"
 $skipGpu = $env:SKIP_GPU -eq "1"
-if (-not $skipGpu) {
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        Write-Host "NVIDIA GPU detected. Embedding generation may be faster with CUDA-enabled PyTorch."
+
+if ($skipGpu) {
+    Write-Host "Skipping GPU detection (SKIP_GPU=1)."
+}
+elseif (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+    $gpuVendor = "nvidia"
+    # Parse CUDA version from nvidia-smi header
+    $nvsmiOutput = nvidia-smi 2>&1 | Out-String
+    $cudaMatch = [regex]::Match($nvsmiOutput, 'CUDA Version:\s*(\d+)\.(\d+)')
+    $gpuNameLine = nvidia-smi --query-gpu=name --format=csv,noheader 2>&1 | Select-Object -First 1
+    $gpuName = if ($gpuNameLine) { $gpuNameLine.ToString().Trim() } else { "unknown" }
+
+    if ($cudaMatch.Success) {
+        $cudaMajor = [int]$cudaMatch.Groups[1].Value
+        $cudaMinor = [int]$cudaMatch.Groups[2].Value
+        Write-Host "NVIDIA GPU detected: $gpuName (driver CUDA $cudaMajor.$cudaMinor)"
+
+        # Map driver CUDA version to the best available PyTorch index
+        if ($cudaMajor -ge 13 -or ($cudaMajor -eq 12 -and $cudaMinor -ge 8)) {
+            $torchIndexUrl = "https://download.pytorch.org/whl/cu128"
+            $gpuStatus = "nvidia-cu128"
+        }
+        elseif ($cudaMajor -eq 12 -and $cudaMinor -ge 6) {
+            $torchIndexUrl = "https://download.pytorch.org/whl/cu126"
+            $gpuStatus = "nvidia-cu126"
+        }
+        elseif ($cudaMajor -eq 12 -and $cudaMinor -ge 4) {
+            $torchIndexUrl = "https://download.pytorch.org/whl/cu124"
+            $gpuStatus = "nvidia-cu124"
+        }
+        elseif ($cudaMajor -eq 12) {
+            $torchIndexUrl = "https://download.pytorch.org/whl/cu121"
+            $gpuStatus = "nvidia-cu121"
+        }
+        elseif ($cudaMajor -eq 11 -and $cudaMinor -ge 8) {
+            $torchIndexUrl = "https://download.pytorch.org/whl/cu118"
+            $gpuStatus = "nvidia-cu118"
+        }
+        else {
+            Write-Host "CUDA $cudaMajor.$cudaMinor is older than 11.8 - falling back to CPU PyTorch."
+            Write-Host "Consider updating your NVIDIA drivers for GPU acceleration."
+        }
     }
     else {
-        Write-Host "No NVIDIA GPU detected. Install still works on CPU."
+        Write-Host "NVIDIA GPU detected ($gpuName) but could not parse CUDA version."
+        Write-Host "Falling back to CPU PyTorch. Update drivers for GPU acceleration."
     }
 }
+elseif (Get-Command rocm-smi -ErrorAction SilentlyContinue) {
+    $gpuVendor = "amd"
+    $gpuName = "unknown"
+    try {
+        $rocmOutput = rocm-smi --showproductname 2>&1 | Out-String
+        $nameMatch = [regex]::Match($rocmOutput, 'GPU\[\d+\]\s*:\s*(.*)')
+        if ($nameMatch.Success) { $gpuName = $nameMatch.Groups[1].Value.Trim() }
+    } catch {}
+
+    Write-Host "AMD GPU detected: $gpuName"
+
+    # AMD ROCm on Windows — use the ROCm PyTorch index
+    # Note: ROCm on Windows has limited support; HIP SDK must be installed
+    $torchIndexUrl = "https://download.pytorch.org/whl/rocm6.2.4"
+    $gpuStatus = "amd-rocm6.2"
+}
 else {
-    Write-Host "Skipping GPU detection (SKIP_GPU=1)."
+    # Check for AMD GPU via WMI even without ROCm tools
+    try {
+        $gpuInfo = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "AMD|Radeon" } |
+            Select-Object -First 1
+        if ($gpuInfo) {
+            Write-Host "AMD GPU detected: $($gpuInfo.Name)"
+            Write-Host "  ROCm/HIP SDK not found. Install AMD HIP SDK for GPU acceleration:"
+            Write-Host "  https://rocm.docs.amd.com/projects/install-on-windows/"
+            Write-Host "  After installing HIP SDK, re-run this installer for GPU support."
+            $gpuStatus = "amd-no-rocm"
+        }
+        else {
+            Write-Host "No GPU detected. Embedding generation will use CPU (still works fine)."
+        }
+    } catch {
+        Write-Host "No GPU detected. Embedding generation will use CPU (still works fine)."
+    }
+}
+
+# Install GPU-accelerated PyTorch if a compatible GPU was found
+if ($torchIndexUrl) {
+    Write-Host "Installing GPU-accelerated PyTorch ($gpuStatus)..."
+    Push-Location $ProjectDir
+    try {
+        uv pip install torch --index-url $torchIndexUrl --reinstall --quiet 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "GPU-accelerated PyTorch installed successfully."
+        }
+        else {
+            Write-Warning "GPU PyTorch installation failed - falling back to CPU."
+            Write-Host "  You can retry later: uv pip install torch --index-url $torchIndexUrl --reinstall"
+            $gpuStatus = "cpu-fallback"
+        }
+    } finally {
+        Pop-Location
+    }
 }
 
 Write-Host "Downloading embedding model to $StorageDir"
@@ -234,6 +347,7 @@ Write-Host ""
 Write-Host "Final status summary:"
 Write-Host "  Repo installed/updated: $repoStatus"
 Write-Host "  Dependencies installed: $depsStatus"
+Write-Host "  GPU acceleration: $gpuStatus"
 Write-Host "  Model downloaded: $modelStatus"
 Write-Host "  Reranker downloaded: $rerankerStatus"
 Write-Host "  Ready for indexing: $readyStatus"
@@ -245,7 +359,11 @@ if ($stashedChanges) {
     Write-Host ""
 }
 
-Write-Host "Next steps:"
+Write-Host "MCP server command:"
+Write-Host "  uv run --directory `"$ProjectDir`" python mcp_server/server.py"
+Write-Host "  If installed via PyPI: agent-context-local-mcp"
+Write-Host ""
+Write-Host "Next steps (Claude Code):"
 if ($isUpdate) {
     Write-Host "1) Remove old server: claude mcp remove code-search"
     Write-Host "2) Add updated server: claude mcp add code-search --scope user -- uv run --directory `"$ProjectDir`" python mcp_server/server.py"
@@ -259,6 +377,9 @@ else {
     Write-Host "3) In Claude Code: index this codebase"
     Write-Host "4) To switch models later, set CODE_SEARCH_MODEL and re-run this installer"
 }
+Write-Host ""
+Write-Host "For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.):"
+Write-Host "  uv run --directory `"$ProjectDir`" python scripts/cli.py setup-mcp"
 Write-Host ""
 Write-Host "Diagnostics: uv run --directory `"$ProjectDir`" python scripts/cli.py doctor"
 Write-Host "Setup guide: uv run --directory `"$ProjectDir`" python scripts/cli.py setup-guide"

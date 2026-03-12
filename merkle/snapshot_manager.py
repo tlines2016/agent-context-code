@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Dict, List, Optional
 
 from common_utils import get_storage_dir
 from merkle.merkle_dag import MerkleDAG
+
+logger = logging.getLogger(__name__)
 
 
 class SnapshotManager:
@@ -112,15 +115,21 @@ class SnapshotManager:
         try:
             with open(snapshot_path, 'r') as f:
                 snapshot_data = json.load(f)
-                
+
             # Check version compatibility
             if snapshot_data.get('version') != '1.0':
-                print(f"Warning: Snapshot version mismatch: {snapshot_data.get('version')}")
-                
+                logger.warning("Snapshot version mismatch: %s", snapshot_data.get('version'))
+
             return MerkleDAG.from_dict(snapshot_data['dag'])
-            
-        except (json.JSONDecodeError, KeyError, Exception) as e:
-            print(f"Error loading snapshot: {e}")
+
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt snapshot file %s — will re-index from scratch: %s", snapshot_path, e)
+            return None
+        except KeyError as e:
+            logger.error("Snapshot schema mismatch in %s: missing key %s — will re-index", snapshot_path, e)
+            return None
+        except Exception as e:
+            logger.error("Unexpected error loading snapshot %s: %s", snapshot_path, e)
             return None
     
     def load_metadata(self, project_path: str) -> Optional[Dict]:
@@ -140,8 +149,11 @@ class SnapshotManager:
         try:
             with open(metadata_path, 'r') as f:
                 return json.load(f)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error loading metadata: {e}")
+        except json.JSONDecodeError as e:
+            logger.warning("Corrupt metadata file %s: %s", metadata_path, e)
+            return None
+        except Exception as e:
+            logger.warning("Unexpected error loading metadata %s: %s", metadata_path, e)
             return None
     
     def has_snapshot(self, project_path: str) -> bool:

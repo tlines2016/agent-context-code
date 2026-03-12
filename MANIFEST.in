@@ -1,0 +1,4 @@
+recursive-include tests *.py *.json *.yaml *.toml *.md
+recursive-include scripts *.sh *.ps1 *.py
+include conftest.py pytest.ini
+include py.typed

@@ -20,7 +20,11 @@ import sys
 import logging
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from common_utils import get_storage_dir, save_local_install_config
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import get_storage_dir, save_local_install_config
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -32,9 +36,8 @@ from embeddings.huggingface_auth import (
     build_huggingface_auth_error,
     configure_huggingface_auth,
 )
-from common_utils import get_storage_dir, save_local_install_config
 
-DEFAULT_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+DEFAULT_MODEL = "mixedbread-ai/mxbai-embed-xsmall-v1"
 
 
 def download_model(model_name: str = DEFAULT_MODEL, storage_dir: str = None):

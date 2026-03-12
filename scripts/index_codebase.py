@@ -7,10 +7,11 @@ import logging
 import os
 from pathlib import Path
 
-# Add the parent directory to the path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from common_utils import VERSION
+try:
+    from common_utils import VERSION
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import VERSION
 from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager
@@ -43,7 +44,7 @@ def main():
     parser.add_argument(
         "--version",
         action="version",
-        version=f"agent-context-code {VERSION}",
+        version=f"agent-context-local {VERSION}",
     )
     parser.add_argument(
         "directory",

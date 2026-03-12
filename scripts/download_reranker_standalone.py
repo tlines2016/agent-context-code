@@ -22,7 +22,11 @@ import sys
 import logging
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from common_utils import save_reranker_config
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import save_reranker_config
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -34,7 +38,6 @@ from embeddings.huggingface_auth import (
     build_huggingface_auth_error,
     configure_huggingface_auth,
 )
-from common_utils import save_reranker_config
 
 
 def download_reranker(

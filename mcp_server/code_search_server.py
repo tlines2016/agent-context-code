@@ -7,7 +7,6 @@ inheritance) are available for graph-enriched search results.
 """
 
 import os
-import sys
 import json
 import asyncio
 import logging
@@ -16,10 +15,12 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from functools import lru_cache
 
-# Add the parent directory to the path so we can import our modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from common_utils import get_storage_dir, load_reranker_config
+try:
+    from common_utils import get_storage_dir, load_reranker_config
+except ImportError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from common_utils import get_storage_dir, load_reranker_config
 from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager

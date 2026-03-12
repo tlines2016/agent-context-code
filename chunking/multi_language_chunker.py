@@ -338,19 +338,23 @@ class MultiLanguageChunker:
         else:
             valid_extensions = self.supported_extensions
         
-        # Find all files with supported extensions
-        for ext in valid_extensions:
-            for file_path in dir_path.rglob(f'*{ext}'):
-                # Skip common large/build/tooling directories
-                if any(part in self.DEFAULT_IGNORED_DIRS for part in file_path.parts):
-                    continue
-                
-                try:
-                    chunks = self.chunk_file(str(file_path))
-                    all_chunks.extend(chunks)
-                    logger.debug(f"Chunked {len(chunks)} from {file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to chunk {file_path}: {e}")
+        # Single-pass directory walk — one rglob("*") instead of N per-extension
+        ignored = self.DEFAULT_IGNORED_DIRS
+        for file_path in dir_path.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if file_path.suffix not in valid_extensions:
+                continue
+            # Skip common large/build/tooling directories
+            if any(part in ignored for part in file_path.parts):
+                continue
+
+            try:
+                chunks = self.chunk_file(str(file_path))
+                all_chunks.extend(chunks)
+                logger.debug(f"Chunked {len(chunks)} from {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to chunk {file_path}: {e}")
         
         logger.info(f"Total chunks from directory: {len(all_chunks)}")
         return all_chunks

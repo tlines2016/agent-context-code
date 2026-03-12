@@ -31,6 +31,11 @@ except PackageNotFoundError:
     VERSION = "0.0.0-dev"  # fallback for editable/source installs
 
 
+def is_installed_package() -> bool:
+    """True when running as a pip/uv-installed package, False for source checkout."""
+    return VERSION != "0.0.0-dev"
+
+
 def is_windows() -> bool:
     """Return True when running on native Windows (not WSL)."""
     return platform.system() == "Windows"

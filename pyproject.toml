@@ -121,3 +121,4 @@ include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "rer
 
 [tool.setuptools.package-data]
 mcp_server = ["strings.yaml"]
+"*" = ["py.typed"]

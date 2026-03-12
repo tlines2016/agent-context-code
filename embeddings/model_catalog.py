@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+DEFAULT_EMBEDDING_MODEL = "mixedbread-ai/mxbai-embed-xsmall-v1"
 
 # ── Qwen3-Embedding constants ────────────────────────────────────────────────
 # The Qwen3-Embedding family requires an instruction prefix on *queries* to
@@ -48,6 +48,22 @@ class EmbeddingModelConfig:
 
 
 MODEL_CATALOG = {
+    # ── Mixedbread mxbai-embed-xsmall-v1 ─────────────────────────────────
+    # 22.7M parameters, 384-dim, 4K token context.  Fastest CPU option —
+    # roughly 5–14k sentences/sec on a modern CPU.  Outperforms MiniLM on
+    # long-document retrieval (LoCo: 76.34 vs 67.34) due to 4K context window.
+    # Uses asymmetric retrieval: queries get the "Represent this sentence…"
+    # prefix; documents are embedded without any prefix.
+    # Apache 2.0 license; NOT gated.
+    "mixedbread-ai/mxbai-embed-xsmall-v1": EmbeddingModelConfig(
+        model_name="mixedbread-ai/mxbai-embed-xsmall-v1",
+        short_name="mxbai-xsmall",
+        query_prefix="Represent this sentence for searching relevant passages: ",
+        document_prefix="",
+        embedding_dimension=384,
+        description="Default model — 22.7M params, CPU-optimised, 4K context. Fast indexing on any machine.",
+        recommended_for="New installs. Best CPU speed/quality balance. No GPU or HuggingFace auth required.",
+    ),
     "google/embeddinggemma-300m": EmbeddingModelConfig(
         model_name="google/embeddinggemma-300m",
         short_name="gemma-300m",
@@ -66,8 +82,8 @@ MODEL_CATALOG = {
         query_prefix=QWEN3_QUERY_INSTRUCTION,
         document_prefix="",  # Documents must NOT be prefixed
         embedding_dimension=1024,
-        description="Default model — non-gated, CPU-friendly, no HuggingFace auth required.",
-        recommended_for="New installs. Zero-friction setup on any machine (CPU or GPU).",
+        description="CPU-friendly, non-gated, 1024-dim. Better quality than mxbai-xsmall at the cost of speed.",
+        recommended_for="Users who want higher embedding quality on CPU and can tolerate slower indexing.",
     ),
     # ── Unsloth-optimised Qwen3-Embedding-4B ─────────────────────────────
     # This is the primary target model for GPU-accelerated local search.

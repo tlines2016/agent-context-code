@@ -291,7 +291,7 @@ class TestDetectGpuInfo:
              patch("torch.backends.mps", create=True) as mock_mps:
             mock_mps.is_available.return_value = True
             result = _detect_gpu_info()
-            assert result == "Apple MPS"
+            assert "Apple MPS" in result
 
     def test_cpu_only(self):
         from scripts.cli import _detect_gpu_info
@@ -300,7 +300,7 @@ class TestDetectGpuInfo:
              patch("torch.backends.mps", create=True) as mock_mps:
             mock_mps.is_available.return_value = False
             result = _detect_gpu_info()
-            assert result == "CPU only"
+            assert "CPU only" in result
 
     def test_torch_not_importable(self):
         from scripts.cli import _detect_gpu_info

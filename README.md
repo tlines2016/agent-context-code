@@ -50,7 +50,7 @@ The canonical repository is
 - **Graph-enriched results** — Search results include structural context: class hierarchy, method containment, and cross-file inheritance.
 - **23 file types** — Python, JS/TS, Go, Rust, Java, Kotlin, C/C++, C#, Svelte, Markdown, YAML, TOML, and JSON.
 - **Optional reranking** — Two-stage retrieval with a cross-encoder second pass for higher-precision results when you need them.
-- **Lightweight default model** — Ships with Qwen3-Embedding-0.6B. Non-gated, CPU-friendly, no GPU required.
+- **Lightweight default model** — Ships with mxbai-embed-xsmall-v1 (22.7M params, 384-dim). Non-gated, CPU-optimised, no GPU required. Indexes large repos fast.
 
 ## Who Is This For?
 
@@ -73,6 +73,7 @@ Works with any tool that speaks [MCP](https://modelcontextprotocol.io/) (Model C
 | **VS Code** — Continue | MCP server configuration |
 
 If your tool supports MCP, it can use AGENT Context Local.
+See [docs/MCP_SETUP.md](docs/MCP_SETUP.md) for detailed per-tool setup instructions.
 
 ## Getting Started
 
@@ -87,6 +88,31 @@ your **regular terminal** — not inside an AI assistant session.
 > - `pwd` (macOS/Linux) or `cd` with no arguments (Windows) — print your current directory
 > - `cd /path/to/folder` — change directory
 > - `ls` (macOS/Linux) or `dir` (Windows) — list files in the current directory
+
+### Quick Install (PyPI)
+
+If you have Python 3.12+ and uv (or pipx) already installed, the fastest path:
+
+```bash
+# Install the package
+uv tool install agent-context-local
+# or: pipx install agent-context-local
+
+# Register with Claude Code
+claude mcp add code-search --scope user -- agent-context-local-mcp
+
+# Verify
+agent-context-local doctor
+```
+
+The PyPI install gives you two commands: `agent-context-local` (CLI) and
+`agent-context-local-mcp` (MCP server). No git clone needed.
+
+For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.), see
+[docs/MCP_SETUP.md](docs/MCP_SETUP.md) for per-tool registration instructions.
+
+<details>
+<summary>Development / Source Install (git clone)</summary>
 
 ### Step 1: Prerequisites
 
@@ -169,7 +195,7 @@ git --version       # any version
 
 ### Step 2: Install
 
-The default model (`Qwen/Qwen3-Embedding-0.6B`) is **not gated** — no
+The default model (`mixedbread-ai/mxbai-embed-xsmall-v1`) is **not gated** — no
 HuggingFace account or token needed. Just run the installer.
 
 You can review the scripts first if you want:
@@ -296,6 +322,8 @@ find error handling patterns
 
 The assistant uses the `search_code` MCP tool behind the scenes. You can also ask
 it to `get_index_status` to check index health, or `clear_index` to start fresh.
+
+</details>
 
 ## How It Works
 
@@ -425,8 +453,8 @@ The default setup runs on any modern laptop or desktop — no GPU required.
 | Resource | Requirement |
 |----------|-------------|
 | **CPU** | Any x86_64 or ARM64 (Apple Silicon, etc.) |
-| **RAM** | 4 GB free (embedding model uses ~1.2 GB) |
-| **Disk** | ~2 GB free (model files + index storage) |
+| **RAM** | 2 GB free (default embedding model uses ~200 MB) |
+| **Disk** | ~500 MB free (model ~90 MB + index storage) |
 | **GPU** | Not required |
 | **Python** | 3.12+ |
 | **OS** | Windows 10+, macOS 12+, Linux (glibc 2.31+) |
@@ -435,8 +463,9 @@ The default setup runs on any modern laptop or desktop — no GPU required.
 
 | Setup | Embedding Model | Reranker (optional) | RAM / VRAM | Quality |
 |-------|----------------|---------------------|------------|---------|
-| **Default** | Qwen3-Embedding-0.6B (1024-d) | — | ~1.2 GB RAM | Good — runs on any modern PC |
-| **Default + reranker** | Qwen3-Embedding-0.6B (1024-d) | MiniLM-L-6-v2 (22.7M) | ~1.5 GB RAM | Better — adds precision for ~90 MB extra |
+| **Default** | mxbai-embed-xsmall-v1 (384-d, 22.7M) | — | ~200 MB RAM | Good — fastest CPU indexing on any PC |
+| **Default + reranker** | mxbai-embed-xsmall-v1 (384-d) | MiniLM-L-6-v2 (22.7M) | ~400 MB RAM | Better — adds precision with minimal overhead |
+| **CPU quality** | Qwen3-Embedding-0.6B (1024-d) | MiniLM-L-6-v2 (22.7M) | ~1.5 GB RAM | Higher quality on CPU, slower indexing |
 | **GPU starter** | Qwen3-Embedding-0.6B (1024-d) | Qwen3-Reranker-0.6B | ~4 GB VRAM | High — Qwen 0.6B pair, great entry GPU setup |
 | **GPU mid-tier** | Qwen3-Embedding-4B (2560-d) | Qwen3-Reranker-0.6B | ~10 GB VRAM | Higher — bigger embeddings, same fast reranker |
 | **GPU high-end** | Qwen3-Embedding-8B (4096-d) | Qwen3-Reranker-4B | ~28 GB VRAM | Maximum — top MTEB scores |
@@ -468,13 +497,14 @@ irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts
 
 Available models:
 
-| Model | Notes |
-|-------|-------|
-| `Qwen/Qwen3-Embedding-0.6B` | Default, non-gated, CPU-friendly |
-| `unsloth/Qwen3-Embedding-4B` | Higher quality, needs GPU with ~8 GB VRAM |
-| `unsloth/Qwen3-Embedding-8B` | Top MTEB multilingual quality, needs GPU with ~18 GB VRAM |
-| `Salesforce/SFR-Embedding-Code-400M_R` | Code-search-focused alternative |
-| `google/embeddinggemma-300m` | Legacy (gated — requires HuggingFace auth, see below) |
+| Model | Short name | Notes |
+|-------|------------|-------|
+| `mixedbread-ai/mxbai-embed-xsmall-v1` | `mxbai-xsmall` | **Default** — 22.7M params, 384-dim, 4K context, fastest CPU indexing |
+| `Qwen/Qwen3-Embedding-0.6B` | `qwen-embed-0.6b` | 600M params, 1024-dim — higher quality, slower on CPU |
+| `unsloth/Qwen3-Embedding-4B` | `qwen-embed-4b` | Needs GPU ~8 GB VRAM |
+| `unsloth/Qwen3-Embedding-8B` | `qwen-embed-8b` | Top MTEB quality, needs GPU ~18 GB VRAM |
+| `Salesforce/SFR-Embedding-Code-400M_R` | `sfr-code-400m` | Code-search-focused alternative |
+| `google/embeddinggemma-300m` | `gemma-300m` | Legacy (gated — requires HuggingFace auth, see below) |
 
 The selected model is persisted to `~/.agent_code_search/install_config.json`.
 You can change models later by re-running the installer with a different
@@ -615,10 +645,10 @@ to see the current storage size, version count, and graph statistics.
 
 ## CLI Reference
 
-The CLI (`python scripts/cli.py`) handles setup, diagnostics, and configuration.
+The CLI handles setup, diagnostics, and configuration.
 Indexing and search happen through the MCP tools inside your AI assistant.
 
-If you installed via the one-liner script, run CLI commands from anywhere with:
+If installed via PyPI, use `agent-context-local <command>` directly. For source installs:
 
 ```bash
 # macOS / Linux / WSL
@@ -649,7 +679,9 @@ uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/cli.py 
 | `models list` | List all available embedding and reranker models |
 | `models active` | Show currently configured models |
 | `models install <short-name>` | Download a model by short name |
-| `config reranker <on\|off>` | Toggle reranker |
+| `config model <short-name>` | Switch the active embedding model |
+| `config reranker <on\|off>` | Enable or disable the reranker |
+| `config reranker model <short-name>` | Switch the reranker model |
 
 ## Troubleshooting
 
@@ -675,13 +707,13 @@ is fine; the model just needs another try.
 macOS / Linux / Git Bash / WSL:
 
 ```bash
-uv run --directory ~/.local/share/agent-context-code python scripts/download_model_standalone.py --storage-dir ~/.agent_code_search --model "Qwen/Qwen3-Embedding-0.6B" -v
+uv run --directory ~/.local/share/agent-context-code python scripts/download_model_standalone.py --storage-dir ~/.agent_code_search --model "mixedbread-ai/mxbai-embed-xsmall-v1" -v
 ```
 
 Windows PowerShell:
 
 ```powershell
-uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/download_model_standalone.py --storage-dir "$env:USERPROFILE\.agent_code_search" --model "Qwen/Qwen3-Embedding-0.6B" -v
+uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/download_model_standalone.py --storage-dir "$env:USERPROFILE\.agent_code_search" --model "mixedbread-ai/mxbai-embed-xsmall-v1" -v
 ```
 
 ### For AI agents debugging MCP issues

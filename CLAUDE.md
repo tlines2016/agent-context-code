@@ -89,7 +89,7 @@ matching for hybrid search (rebuilt during `optimize()`).
 
 ## Model Notes
 
-- Default embedding model: `Qwen/Qwen3-Embedding-0.6B`
+- Default embedding model: `mixedbread-ai/mxbai-embed-xsmall-v1`
 - Default reranker (when enabled): `cross-encoder/ms-marco-MiniLM-L-6-v2`
 - Embedding catalog: `embeddings/model_catalog.py`
 - Reranker catalog: `reranking/reranker_catalog.py`
