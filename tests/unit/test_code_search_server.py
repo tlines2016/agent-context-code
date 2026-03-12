@@ -326,3 +326,113 @@ class TestCrossProjectNonMutation:
 
         result = json.loads(raw)
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# get_graph_context
+# ---------------------------------------------------------------------------
+
+class TestGetGraphContext:
+    def test_get_graph_context_requires_active_or_target_project(self, server):
+        result = json.loads(server.get_graph_context("c1"))
+        assert "error" in result
+
+    def test_get_graph_context_rejects_negative_depth(self, server):
+        server._current_project = "/some/project"
+        result = json.loads(server.get_graph_context("c1", max_depth=-1))
+        assert "error" in result
+        assert "max_depth must be >= 0" in result["error"]
+
+    def test_get_graph_context_rejects_non_integer_depth(self, server):
+        server._current_project = "/some/project"
+        result = json.loads(server.get_graph_context("c1", max_depth="2"))
+        assert "error" in result
+        assert "max_depth must be a non-negative integer" in result["error"]
+
+    def test_get_graph_context_rejects_boolean_depth(self, server):
+        server._current_project = "/some/project"
+        result = json.loads(server.get_graph_context("c1", max_depth=True))
+        assert "error" in result
+        assert "max_depth must be a non-negative integer" in result["error"]
+
+    def test_get_graph_context_response_counts_match_payload(self, server):
+        server._current_project = "/some/project"
+        mock_graph = MagicMock()
+        mock_graph.get_connected_subgraph.return_value = {
+            "symbols": [{"chunk_id": "a"}, {"chunk_id": "b"}],
+            "edges": [{"source_chunk_id": "a", "target_chunk_id": "b", "edge_type": "contains"}],
+        }
+        with patch.object(server, "get_code_graph", return_value=mock_graph):
+            result = json.loads(server.get_graph_context("a", max_depth=2))
+        assert result["symbol_count"] == len(result["symbols"])
+        assert result["edge_count"] == len(result["edges"])
+
+    def test_get_graph_context_with_project_path_does_not_mutate_active_state(self, server, tmp_path):
+        original_project = "/original/project"
+        original_im = MagicMock()
+        original_searcher = MagicMock()
+        server._current_project = original_project
+        server._index_manager = original_im
+        server._searcher = original_searcher
+
+        target_project = str(tmp_path / "other_project")
+        mock_graph = MagicMock()
+        mock_graph.get_connected_subgraph.return_value = {"symbols": [], "edges": []}
+
+        with patch.object(server, "_open_transient_graph", return_value=mock_graph) as open_graph:
+            result = json.loads(server.get_graph_context("chunk_1", project_path=target_project))
+
+        assert "error" not in result
+        assert server._current_project == original_project
+        assert server._index_manager is original_im
+        assert server._searcher is original_searcher
+        open_graph.assert_called_once()
+        mock_graph.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# clear_index
+# ---------------------------------------------------------------------------
+
+class TestClearIndex:
+    def test_clear_index_always_clears_graph_and_snapshot(self, server):
+        server._current_project = "/active/project"
+        mock_index_manager = MagicMock()
+        mock_graph = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=mock_index_manager), \
+             patch.object(server, "get_code_graph", return_value=mock_graph) as get_graph, \
+             patch("merkle.snapshot_manager.SnapshotManager") as SnapshotManagerMock:
+            result = json.loads(server.clear_index())
+
+        assert result["success"] is True
+        assert result["graph_cleared"] is True
+        mock_index_manager.clear_index.assert_called_once()
+        get_graph.assert_called_once_with("/active/project")
+        mock_graph.clear.assert_called_once()
+        SnapshotManagerMock.return_value.delete_snapshot.assert_called_once_with("/active/project")
+
+
+# ---------------------------------------------------------------------------
+# get_index_status
+# ---------------------------------------------------------------------------
+
+class TestGetIndexStatus:
+    def test_status_does_not_create_graph_db_when_missing(self, server, tmp_path):
+        server._current_project = "/active/project"
+        mock_index_manager = MagicMock()
+        mock_index_manager.get_stats.return_value = {"total_chunks": 0}
+        mock_embedder = MagicMock()
+        mock_embedder.get_model_info.return_value = {"model": "test"}
+        missing_graph_path = tmp_path / "index" / "code_graph.db"
+
+        with patch.object(server, "get_index_manager", return_value=mock_index_manager), \
+             patch.object(server, "embedder", return_value=mock_embedder), \
+             patch.object(server, "reranker", return_value=None), \
+             patch.object(server, "_graph_db_path", return_value=missing_graph_path), \
+             patch("mcp_server.code_search_server.CodeGraph") as code_graph_cls:
+            result = json.loads(server.get_index_status())
+
+        assert "error" not in result
+        assert "graph_statistics" not in result
+        code_graph_cls.assert_not_called()

@@ -323,12 +323,21 @@ class CodeGraph:
             ``{"symbols": [...], "edges": [...]}`` where each symbol /
             edge is a dict.
         """
+        # Keep traversal resilient for direct callers that pass invalid depth.
+        # Server-layer validation enforces non-negative ints for MCP requests.
+        try:
+            traversal_depth = int(max_depth)
+        except (TypeError, ValueError):
+            traversal_depth = 0
+        if traversal_depth < 0:
+            traversal_depth = 0
+
         visited_ids: set = set()
         frontier = {chunk_id}
         all_edges: List[Dict[str, Any]] = []
 
         # depth 0 = seed only; depth 1 = seed + direct neighbours; etc.
-        for _ in range(max_depth + 1):
+        for _ in range(traversal_depth + 1):
             if not frontier:
                 break
             next_frontier: set = set()
@@ -355,6 +364,13 @@ class CodeGraph:
         seen_edges: set = set()
         unique_edges: List[Dict[str, Any]] = []
         for e in all_edges:
+            # Enforce depth-boundary consistency: only include edges fully
+            # contained in the returned symbol set.
+            if (
+                e["source_chunk_id"] not in visited_ids
+                or e["target_chunk_id"] not in visited_ids
+            ):
+                continue
             key = (e["source_chunk_id"], e["target_chunk_id"], e["edge_type"])
             if key not in seen_edges:
                 seen_edges.add(key)

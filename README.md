@@ -47,7 +47,7 @@ things up by meaning, not just by filename or string match.
 | Component | Details |
 |-----------|---------|
 | **Vector database** | LanceDB (embedded, serverless — like SQLite for vectors) |
-| **Relational graph** | SQLite (structural relationships: class hierarchies, call graphs, imports) |
+| **Relational graph** | SQLite (structural relationships: containment + cross-file inheritance today; calls/imports are planned) |
 | **Search** | Hybrid (BM25 keyword + vector similarity), automatically enabled |
 | **Storage** | `~/.claude_code_search` (or `CODE_SEARCH_STORAGE` env var) |
 | **Per-project index** | `~/.claude_code_search/projects/{name}_{hash}` |
@@ -108,7 +108,7 @@ matching with semantic understanding:
 2. **Graph** — structural relationships extracted from the AST chunks (class
    hierarchies, method containment, cross-file inheritance) are stored in a
    SQLite relational graph. This lets you navigate from a search result to its
-   callers, parent classes, or imported modules via `get_graph_context`.
+   parent/child symbols and inherited classes via `get_graph_context` today.
 3. **Embed** — each chunk is passed through a local embedding model that converts
    the code into a high-dimensional vector capturing its semantic meaning.
 4. **Index** — the vectors are stored in a LanceDB table alongside the original
@@ -130,6 +130,17 @@ content hashes) tracks exactly which files changed between runs, so re-indexing
 only processes files that actually changed. Combined with automatic **compaction**
 (which cleans up old versions and deleted data), the index stays lean over time
 without any manual maintenance.
+
+### Graph Retrieval Policy
+
+To keep agent responses both accurate and fast, the project uses a two-tier graph
+policy:
+
+- Graph indexing is **always on** during indexing runs, so structural context is
+  consistently available per project.
+- `search_code` can include lightweight relationship hints for top results.
+- `get_graph_context` remains the dedicated deep-traversal tool when an agent
+  needs richer structural neighborhoods around a specific chunk.
 
 ## Quick Start
 
@@ -361,7 +372,7 @@ There are two ways to interact with AGENT Context Local:
 | `index_directory("/path")` | Index a project (incremental by default) |
 | `search_code("query")` | Hybrid semantic + keyword search |
 | `find_similar_code(chunk_id)` | Find code similar to a known chunk |
-| `get_graph_context(chunk_id)` | Navigate structural relationships (callers, parent classes, etc.) |
+| `get_graph_context(chunk_id)` | Navigate structural relationships (contains/inherits today; other edge types when available) |
 | `get_index_status` | Index statistics, model info, graph stats |
 | `list_projects` | List all indexed projects |
 | `switch_project("/path")` | Change the active project |
@@ -386,7 +397,7 @@ When exploring the codebase or looking for code by meaning, use the
 - "where is the database connection configured?"
 
 To explore how a specific function connects to the rest of the codebase
-(callers, parent classes, imports), use `get_graph_context(chunk_id)` with
+(parent classes, containment, and additional edge types when available), use `get_graph_context(chunk_id)` with
 a chunk_id from a `search_code` result.
 
 If the index seems stale, run `index_directory` to refresh it.

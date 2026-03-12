@@ -31,7 +31,7 @@ tools:
   clear_index: Clear the search index, relational graph, and metadata for the current active project.
 
   get_graph_context: |
-    Retrieve structural relationships around a code chunk. Shows callers, callees, parent classes, and other connections from the relational graph built during indexing.
+    Retrieve structural relationships around a code chunk. Currently returns containment and inheritance relationships; caller/callee/import relationships appear when that extraction is available.
     Usage: get_graph_context(chunk_id="abc123", max_depth=2)
     Cross-project: get_graph_context(chunk_id="abc123", project_path="/other/project")
 

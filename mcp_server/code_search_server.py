@@ -44,6 +44,30 @@ class CodeSearchServer:
         self._searcher: Optional[IntelligentSearcher] = None
         self._current_project: Optional[str] = None
         self._code_graph: Optional[CodeGraph] = None
+        self._code_graph_project: Optional[str] = None
+
+    def _graph_db_path(self, project_path: str, ensure_parent: bool = True) -> Path:
+        """Return the per-project SQLite graph path."""
+        project_dir = self.get_project_storage_dir(project_path)
+        graph_path = project_dir / "index" / "code_graph.db"
+        if ensure_parent:
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+        return graph_path
+
+    def _close_cached_graph(self) -> None:
+        """Close and clear cached graph connection safely."""
+        if self._code_graph is not None:
+            try:
+                self._code_graph.close()
+            except Exception as exc:
+                logger.warning("Failed to close cached code graph: %s", exc)
+        self._code_graph = None
+        self._code_graph_project = None
+
+    def _open_transient_graph(self, project_path: str) -> CodeGraph:
+        """Open a short-lived graph connection for cross-project calls."""
+        graph_path = self._graph_db_path(project_path)
+        return CodeGraph(str(graph_path))
 
     def get_project_storage_dir(self, project_path: str) -> Path:
         """Get or create project-specific storage directory."""
@@ -211,11 +235,18 @@ class CodeSearchServer:
         The graph database lives alongside the LanceDB index in the
         project storage directory (``index/code_graph.db``).
         """
-        project_dir = self.get_project_storage_dir(project_path)
-        graph_path = project_dir / "index" / "code_graph.db"
-        graph_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._code_graph is None or self._current_project != project_path:
+        project_path = str(Path(project_path).resolve())
+        graph_path = self._graph_db_path(project_path)
+
+        if self._code_graph is not None and self._code_graph_project != project_path:
+            # Rebinding to a different project must close the old SQLite
+            # handle first to avoid accumulating file handles over time.
+            self._close_cached_graph()
+
+        if self._code_graph is None:
             self._code_graph = CodeGraph(str(graph_path))
+            self._code_graph_project = project_path
+
         return self._code_graph
 
     def search_code(
@@ -573,10 +604,24 @@ class CodeSearchServer:
                 "storage_directory": str(get_storage_dir()),
             }
 
-            # Include graph statistics when a graph exists.
-            if self._code_graph is not None:
+            # Include graph statistics for the active project when available.
+            if self._current_project is not None:
                 try:
-                    response["graph_statistics"] = self._code_graph.get_stats()
+                    active_project = str(Path(self._current_project).resolve())
+
+                    if (
+                        self._code_graph is not None
+                        and self._code_graph_project == active_project
+                    ):
+                        response["graph_statistics"] = self._code_graph.get_stats()
+                    else:
+                        graph_path = self._graph_db_path(active_project, ensure_parent=False)
+                        if graph_path.exists():
+                            transient_graph = CodeGraph(str(graph_path))
+                            try:
+                                response["graph_statistics"] = transient_graph.get_stats()
+                            finally:
+                                transient_graph.close()
                 except Exception:
                     pass
 
@@ -661,7 +706,7 @@ class CodeSearchServer:
             self._index_manager = None
             self._searcher = None
             # Reset graph so it's re-loaded for the new project.
-            self._code_graph = None
+            self._close_cached_graph()
 
             info_file = project_dir / "project_info.json"
             project_info = {}
@@ -726,7 +771,7 @@ class CodeSearchServer:
     def clear_index(self) -> str:
         """Implementation of clear_index tool.
         
-        Also clears the relational graph when present.
+        Also clears relational graph and Merkle snapshot metadata.
         """
         try:
             if self._current_project is None:
@@ -735,16 +780,37 @@ class CodeSearchServer:
             index_manager = self.get_index_manager()
             index_manager.clear_index()
 
-            # Clear the relational graph alongside the vector index.
-            if self._code_graph is not None:
+            # Clear the relational graph alongside the vector index, even if
+            # the graph was not previously opened in this process.
+            graph_cleared = False
+            try:
+                graph = self.get_code_graph(self._current_project)
+                graph.clear()
+                graph_cleared = True
+            except Exception as exc:
+                logger.warning("Failed to clear code graph via API: %s", exc)
+
+            if not graph_cleared:
                 try:
-                    self._code_graph.clear()
+                    graph_path = self._graph_db_path(self._current_project)
+                    if graph_path.exists():
+                        graph_path.unlink()
+                        graph_cleared = True
                 except Exception as exc:
-                    logger.warning("Failed to clear code graph: %s", exc)
+                    logger.warning("Failed to remove code graph DB file: %s", exc)
+
+            # Keep change detection in sync with a cleared index.
+            from merkle.snapshot_manager import SnapshotManager
+
+            try:
+                SnapshotManager().delete_snapshot(self._current_project)
+            except Exception as exc:
+                logger.warning("Failed to delete project snapshot metadata: %s", exc)
 
             response = {
                 "success": True,
-                "message": "Search index cleared successfully"
+                "message": "Search index cleared successfully",
+                "graph_cleared": graph_cleared,
             }
 
             logger.info("Search index cleared")
@@ -765,7 +831,8 @@ class CodeSearchServer:
         Returns the connected sub-graph (symbols and edges) within
         *max_depth* hops of the given *chunk_id*.  Useful for
         understanding how a search result connects to the rest of the
-        codebase (callers, callees, parent classes, importers, etc.).
+        codebase (containment and inheritance relationships, plus other
+        edge types when available).
 
         Parameters
         ----------
@@ -783,8 +850,29 @@ class CodeSearchServer:
                     "error": "No project is active. Index a directory first.",
                 })
 
-            graph = self.get_code_graph(target_path)
-            subgraph = graph.get_connected_subgraph(chunk_id, max_depth=max_depth)
+            if type(max_depth) is not int:
+                return json.dumps({
+                    "error": f"max_depth must be a non-negative integer (got {type(max_depth).__name__})."
+                })
+            if max_depth < 0:
+                return json.dumps({
+                    "error": f"max_depth must be >= 0 (got {max_depth})."
+                })
+
+            target_path = str(Path(target_path).resolve())
+            active_path = (
+                str(Path(self._current_project).resolve())
+                if self._current_project is not None
+                else None
+            )
+            use_transient_graph = project_path is not None and target_path != active_path
+
+            graph = self._open_transient_graph(target_path) if use_transient_graph else self.get_code_graph(target_path)
+            try:
+                subgraph = graph.get_connected_subgraph(chunk_id, max_depth=max_depth)
+            finally:
+                if use_transient_graph:
+                    graph.close()
 
             return json.dumps({
                 "chunk_id": chunk_id,

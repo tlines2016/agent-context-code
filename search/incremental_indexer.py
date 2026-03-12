@@ -162,6 +162,20 @@ class IncrementalIndexer:
             # Process changes
             chunks_removed = self._remove_old_chunks(changes, project_name, project_path)
             chunks_added = self._add_new_chunks(changes, project_path, project_name)
+
+            graph_stats = {}
+            if self.code_graph is not None:
+                try:
+                    # Incremental updates can invalidate cross-file links
+                    # (e.g. inheritance), so reconcile after add/remove steps.
+                    cross_edges = self.code_graph.resolve_cross_file_edges()
+                    logger.info(
+                        "Incremental graph reconciliation added %d cross-file edges",
+                        cross_edges,
+                    )
+                    graph_stats = self.code_graph.get_stats()
+                except Exception as exc:
+                    logger.warning("Incremental graph reconciliation failed: %s", exc)
             
             # Update snapshot
             self.snapshot_manager.save_snapshot(current_dag, {
@@ -188,7 +202,8 @@ class IncrementalIndexer:
                 chunks_added=chunks_added,
                 chunks_removed=chunks_removed,
                 time_taken=time.time() - start_time,
-                success=True
+                success=True,
+                graph_stats=graph_stats,
             )
             
         except Exception as e:
