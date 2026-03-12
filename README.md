@@ -375,11 +375,11 @@ These tools are available inside your AI assistant session after MCP registratio
 
 | Tool | Description |
 |------|-------------|
-| `index_directory("/path")` | Index a project (incremental by default) |
-| `search_code("query")` | Hybrid semantic + keyword search with lightweight graph enrichment |
+| `index_directory("/path")` | Index a project (incremental by default). Optional `max_file_bytes` overrides the structured file size limit; skipped files are reported in the response. |
+| `search_code("query")` | Hybrid semantic + keyword search with lightweight graph enrichment. `file_pattern` supports true glob patterns (`*.py`, `src/**/*.ts`). `max_results_per_file` caps results per file for better breadth. |
 | `find_similar_code(chunk_id)` | Find code similar to a known chunk |
 | `get_graph_context(chunk_id)` | Deep structural context: full neighborhood traversal up to `max_depth` |
-| `get_index_status` | Index statistics, model info, and graph stats |
+| `get_index_status` | Index statistics, model info, and graph stats. Response is compact (per-file counts excluded). |
 | `list_projects` | List all indexed projects |
 | `switch_project("/path")` | Change the active project |
 | `clear_index` | Clear the vector index and relational graph |
@@ -484,6 +484,26 @@ vector similarity) is enabled by default — no extra configuration needed.
 with `python scripts/cli.py config reranker on`. See
 [Optional: Two-Stage Reranker](#optional-two-stage-reranker) for the full list
 of reranker models.
+
+### GPU Auto-Detection
+
+When a GPU is available (NVIDIA CUDA, AMD ROCm, or Apple MPS), the system
+automatically upgrades defaults for better quality with no manual configuration:
+
+- **Embedding model**: Auto-upgrades from mxbai-embed-xsmall-v1 (CPU default)
+  to Qwen3-Embedding-0.6B when a GPU is detected and no explicit model is
+  configured.
+- **Reranker**: Auto-enables Qwen3-Reranker-0.6B on GPU when no explicit
+  reranker config exists.
+- **Install scripts**: When running the installer with a GPU present, the
+  GPU-optimised models are saved to `install_config.json` automatically.
+
+This is completely transparent — GPU users get better defaults without thinking
+about it. Explicit user configuration (via `config model`, `config reranker`,
+or `install_config.json`) always takes precedence over auto-detection.
+
+Verify with `python scripts/cli.py doctor` — it shows GPU status and whether
+model auto-upgrade is active.
 
 ## Advanced Configuration
 

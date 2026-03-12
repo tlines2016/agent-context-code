@@ -6,9 +6,10 @@ tools:
     Key args:
       query (required): natural language description of code to find.
       k: number of results (1–100, default 5).
-      file_pattern: glob filter (e.g. "*.py", "src/**/*.ts").
+      file_pattern: glob filter (e.g. "*.py", "src/**/*.ts"). * and ** both match any depth; ? matches one char. Plain strings without globs are substring matches.
       chunk_type: filter by "function", "class", "method", etc.
       project_path: search a different indexed project without switching context.
+      max_results_per_file: cap per file for breadth (e.g. 3–5). Excess pushed to end, not removed.
     Example: search_code("retry logic with exponential backoff", k=10, file_pattern="*.py")
     Cross-project: search_code("auth middleware", project_path="/other/repo")
 
@@ -20,6 +21,7 @@ tools:
       directory_path (required): absolute path to the project root.
       project_name, file_patterns: optional display name and glob includes (sensible defaults).
       incremental: False to force full re-index (default True).
+      max_file_bytes: max size for structured files (YAML/TOML/JSON, default 10MB). Skipped files reported in response. Does not affect source code.
     Example: index_directory("/home/user/my-project")
 
   find_similar_code: |
@@ -34,7 +36,7 @@ tools:
   get_index_status: |
     Get index health, sync status, and metadata for the active project.
     USE WHEN: You need to check whether a project is indexed, verify sync state (synced/degraded), or inspect storage metrics.
-    Returns: chunk count, storage size, vector/graph/snapshot sync status, model info, and reranker state.
+    Returns: chunk count, storage size, sync status, model info, reranker state (compact summary, no per-file counts).
 
   list_projects: |
     List all indexed projects with paths and metadata.

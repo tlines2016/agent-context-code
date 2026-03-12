@@ -82,47 +82,52 @@ class IntelligentSearcher:
         query: str,
         k: int = 5,
         context_depth: int = 1,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        max_results_per_file: Optional[int] = None,
     ) -> List[SearchResult]:
         """Semantic search for code understanding.
-        
+
         This provides semantic search capabilities. For complete search coverage:
         - Use this tool for conceptual/functionality queries
         - Use your editor/CLI grep for exact term matching
         - Combine both for comprehensive results
-        
+
         Args:
             query: Natural language query
             k: Number of results
             context_depth: Include related chunks
             filters: Optional filters
+            max_results_per_file: Cap results per file.  Excess results
+                are pushed to the end rather than removed, preserving
+                breadth across files.  None = no limit (default).
         """
-        
+
         # Focus on semantic search - our specialty
-        return self._semantic_search(query, k, context_depth, filters)
+        return self._semantic_search(query, k, context_depth, filters, max_results_per_file)
     
     def _semantic_search(
         self,
         query: str,
         k: int = 5,
         context_depth: int = 1,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        max_results_per_file: Optional[int] = None,
     ) -> List[SearchResult]:
         """Pure semantic search implementation."""
-        
+
         # Detect query intent and optimize
         optimized_query = self._optimize_query(query)
         intent_tags = self._detect_query_intent(query)
-        
+
         self._logger.info(f"Searching for: '{optimized_query}' with intent: {intent_tags}")
-        
+
         # Generate query embedding
         query_embedding = self.embedder.embed_query(optimized_query)
-        
+
         self._logger.info(f"Query embedding shape: {query_embedding.shape if hasattr(query_embedding, 'shape') else 'unknown'}")
         self._logger.info(f"Using original filters: {filters}")
         self._logger.info(f"Calling index_manager.search with k={k}")
-        
+
         # Fetch more candidates when reranker is active
         fetch_k = self._reranker_recall_k if self._reranker else k
 
@@ -154,6 +159,10 @@ class IntelligentSearcher:
 
         # Post-process and rank results
         ranked_results = self._rank_results(search_results, query, intent_tags, reranked=reranked)
+
+        # Apply per-file diversity cap (excess pushed to end, not removed).
+        if max_results_per_file is not None:
+            ranked_results = self._apply_per_file_cap(ranked_results, max_results_per_file)
 
         return ranked_results[:k]
     
@@ -329,6 +338,35 @@ class IntelligentSearcher:
         ranked_results = sorted(results, key=calculate_rank_score, reverse=True)
         return ranked_results
     
+    @staticmethod
+    def _apply_per_file_cap(
+        results: List[SearchResult],
+        max_per_file: int,
+    ) -> List[SearchResult]:
+        """Limit results per file to improve breadth across the codebase.
+
+        Results within the cap go to a ``primary`` list (preserving rank
+        order).  Excess results are pushed to an ``overflow`` list that is
+        appended after primary.  Nothing is removed — only reordered —
+        so downstream ``[:k]`` still controls the final count.
+
+        Runs in O(n) single-pass over the ranked result list.
+        """
+        file_counts: Dict[str, int] = {}
+        primary: List[SearchResult] = []
+        overflow: List[SearchResult] = []
+
+        for result in results:
+            path = result.relative_path
+            count = file_counts.get(path, 0)
+            if count < max_per_file:
+                primary.append(result)
+            else:
+                overflow.append(result)
+            file_counts[path] = count + 1
+
+        return primary + overflow
+
     def _normalize_to_tokens(self, text: str) -> List[str]:
         """Convert text to normalized tokens, handling CamelCase."""
         # Split CamelCase and snake_case

@@ -19,8 +19,14 @@ class MultiLanguageChunker:
     # Supported extensions - derived from LANGUAGE_MAP
     SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys()) | set(STRUCTURED_DATA_EXTENSION_MAP.keys())
     CONFIG_FILE_NAME = '.agent-context-code.json'
-    DEFAULT_MAX_STRUCTURED_FILE_LINES = 50_000
-    DEFAULT_MAX_STRUCTURED_FILE_BYTES = 5_000_000
+    # 100K lines — aligned with the 10 MB byte limit. A typical structured
+    # config file averages ~100 bytes/line, so 10 MB ≈ 100K lines.
+    DEFAULT_MAX_STRUCTURED_FILE_LINES = 100_000
+    # 10 MB — covers large OpenAPI specs and monorepo configs while still
+    # excluding truly huge generated files (package-lock.json, yarn.lock).
+    # Override per-project via CODE_SEARCH_MAX_STRUCTURED_FILE_BYTES env var
+    # or the max_file_bytes param on index_directory().
+    DEFAULT_MAX_STRUCTURED_FILE_BYTES = 10_000_000
     
     # Common large/build/tooling directories to skip during traversal
     DEFAULT_IGNORED_DIRS = {
@@ -36,14 +42,23 @@ class MultiLanguageChunker:
         'target', 'bin', 'obj'
     }
     
-    def __init__(self, root_path: Optional[str] = None):
+    def __init__(
+        self,
+        root_path: Optional[str] = None,
+        max_structured_file_bytes: Optional[int] = None,
+    ):
         """Initialize multi-language chunker.
-        
+
         Args:
             root_path: Optional root path for relative path calculation
+            max_structured_file_bytes: Optional override for the max
+                structured file size limit (bytes).  When provided,
+                takes precedence over the project config / env default.
         """
         self.root_path = root_path
         self.indexing_config = self._load_indexing_config()
+        if max_structured_file_bytes is not None:
+            self.indexing_config['max_structured_file_bytes'] = max_structured_file_bytes
         self.excluded_extensions = set(self.indexing_config['exclude_extensions'])
         self.supported_extensions = self.SUPPORTED_EXTENSIONS - self.excluded_extensions
         # Use tree-sitter for all programming languages and a structured parser for config files
@@ -135,6 +150,15 @@ class MultiLanguageChunker:
     def _is_internal_config_file(self, file_path: str) -> bool:
         """Avoid indexing the local indexing configuration itself."""
         return Path(file_path).name == self.CONFIG_FILE_NAME
+
+    @property
+    def skipped_files(self) -> List:
+        """Files skipped during chunking (size/line limits exceeded)."""
+        return self.structured_data_chunker.skipped_files
+
+    def reset_skipped_files(self) -> None:
+        """Clear the skipped files list (call before each indexing session)."""
+        self.structured_data_chunker.reset_skipped_files()
 
     def get_indexing_config_signature(self) -> dict:
         """Return the active indexing configuration for cache invalidation."""
@@ -265,7 +289,7 @@ class MultiLanguageChunker:
                 try:
                     rel_path = path.relative_to(self.root_path)
                     folder_parts = list(rel_path.parent.parts)
-                    relative_path_str = str(rel_path)
+                    relative_path_str = str(rel_path).replace("\\", "/")
                 except ValueError:
                     folder_parts = [path.parent.name] if path.parent.name else []
             else:

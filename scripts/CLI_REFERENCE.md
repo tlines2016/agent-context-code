@@ -284,3 +284,15 @@ curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/
 | `qwen-reranker-0.6b` | Qwen/Qwen3-Reranker-0.6B | 600M | ~2 GB VRAM | 32K context, pairs with Qwen embedder |
 | `bge-reranker-m3` | BAAI/bge-reranker-v2-m3 | ~600M | ~2 GB VRAM | Multilingual codebases |
 | `qwen-reranker-4b` | Qwen/Qwen3-Reranker-4B | 4B | ~10 GB VRAM | Maximum quality |
+
+---
+
+## Local Installation Commands
+
+```bash
+# Replace <install-path> with your actual installation directory
+# Linux/macOS: ~/.local/share/agent-context-code
+# Windows:     %LOCALAPPDATA%\agent-context-code
+claude mcp remove code-search --scope user
+claude mcp add code-search --scope user -- uv run --directory "<install-path>" python mcp_server/server.py
+```

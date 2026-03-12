@@ -5,6 +5,7 @@ from typing import Optional
 
 
 DEFAULT_EMBEDDING_MODEL = "mixedbread-ai/mxbai-embed-xsmall-v1"
+GPU_DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 
 # ── Qwen3-Embedding constants ────────────────────────────────────────────────
 # The Qwen3-Embedding family requires an instruction prefix on *queries* to
@@ -45,6 +46,7 @@ class EmbeddingModelConfig:
     embedding_dimension: Optional[int] = None
     description: str = ""
     recommended_for: str = ""
+    gpu_default: bool = False
 
 
 MODEL_CATALOG = {
@@ -84,6 +86,7 @@ MODEL_CATALOG = {
         embedding_dimension=1024,
         description="CPU-friendly, non-gated, 1024-dim. Better quality than mxbai-xsmall at the cost of speed.",
         recommended_for="Users who want higher embedding quality on CPU and can tolerate slower indexing.",
+        gpu_default=True,
     ),
     # ── Unsloth-optimised Qwen3-Embedding-4B ─────────────────────────────
     # This is the primary target model for GPU-accelerated local search.

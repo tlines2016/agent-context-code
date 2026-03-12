@@ -683,10 +683,20 @@ class CodeIndexManager:
     # Statistics
     # ------------------------------------------------------------------
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Return index statistics (cached)."""
+    def get_stats(self, summary_only: bool = False) -> Dict[str, Any]:
+        """Return index statistics (cached).
+
+        Parameters
+        ----------
+        summary_only : bool
+            When True, excludes the ``file_chunk_counts`` dict from the
+            returned payload.  This keeps the response compact for MCP
+            tool output on large projects (the full dict can be 100 KB+
+            for 1000-file codebases).  The internal cache always stores
+            the full data so ``get_file_chunk_count()`` continues to work.
+        """
         if self._stats_cache is not None:
-            return self._stats_cache
+            return self._make_summary(self._stats_cache) if summary_only else self._stats_cache
 
         if self.stats_path.exists():
             try:
@@ -695,11 +705,17 @@ class CodeIndexManager:
                 self._stats_cache = stats
                 self._file_chunk_counts = stats.get("file_chunk_counts", {})
                 self._indexing_config = stats.get("indexing_config", {})
-                return stats
+                return self._make_summary(stats) if summary_only else stats
             except Exception:
                 pass
 
-        return self._compute_stats()
+        full_stats = self._compute_stats()
+        return self._make_summary(full_stats) if summary_only else full_stats
+
+    @staticmethod
+    def _make_summary(stats: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of *stats* without the large ``file_chunk_counts`` dict."""
+        return {k: v for k, v in stats.items() if k != "file_chunk_counts"}
 
     def _update_stats(self) -> None:
         """Recompute and persist index statistics."""
@@ -834,6 +850,75 @@ class CodeIndexManager:
         )
 
     @staticmethod
+    def _glob_to_like_pattern(glob_pattern: str) -> str:
+        """Convert a glob pattern (or plain substring) to a SQL LIKE pattern.
+
+        Handles three cases:
+
+        1. **No glob chars** (``*``, ``?``): treated as a substring match
+           for backward compatibility — ``auth`` becomes ``%auth%``.
+        2. **Single star** (``*``) and **double star** (``**``): both
+           translated to ``%`` (SQL LIKE has no single-segment wildcard).
+           ``*.kt`` becomes ``%.kt``; ``src/**/*.ts`` becomes ``src/%.ts``.
+        3. **Question mark** (``?``): single character — translated to ``_``.
+
+        .. note::
+
+           SQL LIKE ``%`` matches across path separators, so ``*`` and
+           ``**`` are functionally equivalent.  This is more permissive
+           than true filesystem glob but sufficient for file-pattern
+           filtering in search results.
+
+        Backslashes in the input are normalised to forward slashes so
+        patterns work on both Windows and Unix.
+        """
+        pattern = glob_pattern.replace("\\", "/")
+
+        has_glob = "*" in pattern or "?" in pattern
+        if not has_glob:
+            safe = CodeIndexManager._escape_like_pattern(pattern)
+            return f"%{safe}%"
+
+        # Process the glob pattern segment by segment.
+        # 1) Replace ** with a placeholder (to avoid double-processing).
+        # 2) Escape literal parts.
+        # 3) Convert * -> %, ? -> _.
+        result_parts: list[str] = []
+        # Split on '**' first, then handle '*' inside each part.
+        double_star_segments = pattern.split("**")
+        for idx, segment in enumerate(double_star_segments):
+            if idx > 0:
+                # Each '**' boundary becomes '%' (match any depth).
+                result_parts.append("%")
+            # Within each segment, split on '*' to handle single-star globs.
+            star_segments = segment.split("*")
+            for j, literal in enumerate(star_segments):
+                if j > 0:
+                    result_parts.append("%")
+                # Within each literal piece, convert '?' to '_' and escape
+                # SQL-significant characters in the literal text.
+                qmark_parts = literal.split("?")
+                for q, lit in enumerate(qmark_parts):
+                    if q > 0:
+                        result_parts.append("_")
+                    if lit:
+                        result_parts.append(CodeIndexManager._escape_like_pattern(lit))
+
+        # Collapse consecutive '%' markers (e.g. "%/%" from "**/" → "%").
+        # SQL LIKE '%' already matches any sequence including path separators,
+        # so adjacent '%' are redundant.
+        merged: list[str] = []
+        for part in result_parts:
+            if part == "%" and merged and merged[-1] == "%":
+                continue
+            merged.append(part)
+        # Also collapse cases like %/% where the / between wildcards is redundant
+        result = "".join(merged)
+        while "%/%" in result:
+            result = result.replace("%/%", "%")
+        return result
+
+    @staticmethod
     def _build_where_clause(filters: Optional[Dict[str, Any]]) -> Optional[str]:
         """Convert the legacy filter dict into a LanceDB SQL WHERE clause."""
         if not filters:
@@ -842,13 +927,14 @@ class CodeIndexManager:
         clauses: list[str] = []
         for key, value in filters.items():
             if key == "file_pattern":
-                # file_pattern is a list of substrings to match against
-                # relative_path.  LanceDB uses SQL LIKE for patterns.
+                # file_pattern is a list of glob patterns (or substrings) to
+                # match against relative_path.  Glob chars are converted to
+                # SQL LIKE wildcards; plain strings fall back to substring match.
                 pattern_clauses = []
                 for pattern in value:
-                    safe = CodeIndexManager._escape_like_pattern(pattern)
+                    like_pattern = CodeIndexManager._glob_to_like_pattern(pattern)
                     pattern_clauses.append(
-                        f"relative_path LIKE '%{safe}%' ESCAPE '\\'"
+                        f"relative_path LIKE '{like_pattern}' ESCAPE '\\'"
                     )
                 if pattern_clauses:
                     clauses.append("(" + " OR ".join(pattern_clauses) + ")")

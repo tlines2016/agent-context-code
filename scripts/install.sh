@@ -153,10 +153,37 @@ else
   DEPS_STATUS="skipped"
 fi
 
+# Direct path to venv Python — used after GPU PyTorch install to avoid
+# uv run's implicit sync, which reverts GPU torch back to CPU (uv.lock
+# pins the CPU build).  Safe for stdlib-only inline scripts.
+VENV_PYTHON="${PROJECT_DIR}/.venv/bin/python"
+
 # ── GPU-accelerated PyTorch installation ──────────────────────────────────
 # Detect GPU vendor and install the matching PyTorch build so embeddings
 # run on the accelerator instead of CPU.  Falls back gracefully to CPU
 # if detection fails or SKIP_GPU=1.
+#
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  IMPORTANT: GPU PyTorch vs uv sync/run                             ║
+# ║                                                                    ║
+# ║  PyTorch GPU builds use PEP 440 local version specifiers           ║
+# ║  (e.g. torch==2.10.0+cu128). uv.lock pins the CPU build           ║
+# ║  (torch==2.10.0 from PyPI). Every `uv run` or `uv sync` call      ║
+# ║  reverts GPU torch back to CPU because uv prefers non-local        ║
+# ║  versions.                                                         ║
+# ║                                                                    ║
+# ║  Our workaround:                                                   ║
+# ║  1. Install GPU torch via `uv pip install --index-url`             ║
+# ║  2. Use VENV_PYTHON (.venv/bin/python) directly for post-install   ║
+# ║     checks — avoids triggering uv sync                             ║
+# ║  3. Use `uv run --no-sync` for all subsequent uv run calls         ║
+# ║  4. Print --no-sync in the MCP registration command                ║
+# ║  5. Save torch_index_url to install_config.json for recovery       ║
+# ║                                                                    ║
+# ║  DO NOT replace VENV_PYTHON calls with `uv run python` or remove   ║
+# ║  --no-sync flags without understanding this interaction.            ║
+# ║  See also: _update_torch_lockfile() in scripts/cli.py              ║
+# ╚══════════════════════════════════════════════════════════════════════╝
 #
 # Supported:
 #   NVIDIA (CUDA)    — detected via nvidia-smi; parses driver CUDA version
@@ -252,7 +279,7 @@ fi
 # Skip if the correct build is already present to avoid re-downloading on every run.
 if [[ -n "${TORCH_INDEX_URL}" ]]; then
   WANTED_BUILD="${TORCH_INDEX_URL##*/}"  # e.g. "cu128"
-  EXISTING_BUILD=$(cd "${PROJECT_DIR}" && uv run python -c \
+  EXISTING_BUILD=$("${VENV_PYTHON}" -c \
     "import torch; v=torch.__version__; print(v.split('+')[-1] if '+' in v else 'cpu')" \
     2>/dev/null || echo "none")
 
@@ -272,6 +299,80 @@ elif [[ "${GPU_VENDOR}" == "mps" ]]; then
   msg "Apple Silicon MPS: standard PyTorch build includes MPS support — no extra install needed."
 fi
 
+# Track whether a custom GPU PyTorch build was installed.
+# When true, subsequent uv run calls need --no-sync to prevent
+# uv from reverting to the CPU torch pinned in uv.lock.
+GPU_NEEDS_NO_SYNC=0
+if [[ -n "${TORCH_INDEX_URL}" && "${GPU_STATUS}" != "cpu-fallback" ]]; then
+  GPU_NEEDS_NO_SYNC=1
+fi
+UV_RUN_CMD="uv run"
+if [[ "${GPU_NEEDS_NO_SYNC}" == "1" ]]; then
+  UV_RUN_CMD="uv run --no-sync"
+fi
+
+# ── Auto-save GPU-appropriate model defaults ────────────────────────────
+# When a GPU was detected and no explicit model choice exists in
+# install_config.json, pre-configure the GPU-optimised embedding model
+# and reranker so the MCP server uses them on first run.
+if [[ "${GPU_VENDOR}" != "cpu" && "${GPU_STATUS}" != "cpu-fallback" ]]; then
+  CONFIG_FILE="${STORAGE_DIR}/install_config.json"
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    HAS_EMBEDDING=$("${VENV_PYTHON}" -c "
+import json, sys
+try:
+    c = json.load(open(sys.argv[1]))
+    print('yes' if c.get('embedding_model') else 'no')
+except Exception:
+    print('no')
+" "${CONFIG_FILE}" 2>/dev/null || echo "no")
+  else
+    HAS_EMBEDDING="no"
+  fi
+
+  if [[ "${HAS_EMBEDDING}" == "no" ]]; then
+    GPU_EMBED_MODEL="Qwen/Qwen3-Embedding-0.6B"
+    GPU_RERANKER_MODEL="Qwen/Qwen3-Reranker-0.6B"
+    msg "GPU detected — saving GPU-optimised model defaults to install_config.json"
+    msg "  Embedding: ${GPU_EMBED_MODEL}"
+    msg "  Reranker:  ${GPU_RERANKER_MODEL} (auto-enabled)"
+    mkdir -p "${STORAGE_DIR}"
+    ("${VENV_PYTHON}" -c "
+import json, sys, os
+config_path = sys.argv[1]
+config = {}
+if os.path.exists(config_path):
+    try:
+        config = json.load(open(config_path))
+    except Exception:
+        pass
+config['embedding_model'] = {'model_name': sys.argv[2], 'auto_configured': True}
+config['reranker'] = {'model_name': sys.argv[3], 'enabled': True, 'recall_k': 50, 'auto_configured': True}
+config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6]}
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+" "${CONFIG_FILE}" "${GPU_EMBED_MODEL}" "${GPU_RERANKER_MODEL}" "${GPU_VENDOR}" "${TORCH_INDEX_URL:-}" "${GPU_STATUS}" 2>/dev/null) || true
+    # Update MODEL_NAME so the download step fetches the GPU model
+    MODEL_NAME="${GPU_EMBED_MODEL}"
+    GPU_RERANKER_AUTO="${GPU_RERANKER_MODEL}"
+  fi
+fi
+
+# ── GPU-auto-enabled reranker download ────────────────────────────────
+# When the installer auto-enabled the reranker for GPU, download it now
+# (regardless of CODE_SEARCH_PROFILE) so it's ready on first MCP run.
+if [[ -n "${GPU_RERANKER_AUTO:-}" ]]; then
+  msg "Downloading GPU reranker model: ${GPU_RERANKER_AUTO}"
+  if (cd "${PROJECT_DIR}" && ${UV_RUN_CMD} scripts/download_reranker_standalone.py --storage-dir "${STORAGE_DIR}" --model "${GPU_RERANKER_AUTO}" -v); then
+    RERANKER_STATUS="ok"
+  else
+    RERANKER_STATUS="failed"
+    msg "WARNING: GPU reranker download did not complete."
+    msg "The reranker is optional — search still works with embedding-only mode."
+  fi
+fi
+
 msg "Downloading embedding model to ${STORAGE_DIR}"
 mkdir -p "${STORAGE_DIR}"
 
@@ -283,7 +384,7 @@ if command -v df >/dev/null 2>&1; then
     printf "${YELLOW}⚠ Low disk space: %s MB free in %s (recommend at least 2 GB)${NC}\n" "${FREE_MB}" "${STORAGE_DIR}"
   fi
 fi
-if (cd "${PROJECT_DIR}" && uv run scripts/download_model_standalone.py --storage-dir "${STORAGE_DIR}" --model "${MODEL_NAME}" -v); then
+if (cd "${PROJECT_DIR}" && ${UV_RUN_CMD} scripts/download_model_standalone.py --storage-dir "${STORAGE_DIR}" --model "${MODEL_NAME}" -v); then
   MODEL_STATUS="ok"
 else
   MODEL_STATUS="failed"
@@ -302,11 +403,11 @@ fi
 # Controlled by CODE_SEARCH_PROFILE (default: base).
 # Profiles: base = embedding only, reranker = +reranker, full = everything
 PROFILE="${CODE_SEARCH_PROFILE:-base}"
-RERANKER_STATUS="skipped"
+RERANKER_STATUS="${RERANKER_STATUS:-skipped}"
 if [[ "$PROFILE" == "reranker" || "$PROFILE" == "full" ]]; then
   RERANKER_NAME="${CODE_SEARCH_RERANKER:-cross-encoder/ms-marco-MiniLM-L-6-v2}"
   msg "Downloading reranker model: ${RERANKER_NAME}"
-  if (cd "${PROJECT_DIR}" && uv run scripts/download_reranker_standalone.py --storage-dir "${STORAGE_DIR}" --model "${RERANKER_NAME}" -v); then
+  if (cd "${PROJECT_DIR}" && ${UV_RUN_CMD} scripts/download_reranker_standalone.py --storage-dir "${STORAGE_DIR}" --model "${RERANKER_NAME}" -v); then
     RERANKER_STATUS="ok"
   else
     RERANKER_STATUS="failed"
@@ -349,23 +450,33 @@ if [[ "${STASHED_CHANGES}" == "1" ]]; then
   printf "  Inspect with: git -C %s stash list\n\n" "${PROJECT_DIR}"
 fi
 
+UV_RUN_PRINT="uv run"
+if [[ "${GPU_NEEDS_NO_SYNC}" == "1" ]]; then
+  UV_RUN_PRINT="uv run --no-sync"
+fi
+
 printf "${BOLD}MCP server command:${NC}\n"
-printf "  uv run --directory %s python mcp_server/server.py\n\n" "${PROJECT_DIR}"
+printf "  %s --directory %s python mcp_server/server.py\n\n" "${UV_RUN_PRINT}" "${PROJECT_DIR}"
 printf "  If installed via PyPI: agent-context-local-mcp\n\n"
+
+if [[ "${GPU_NEEDS_NO_SYNC}" == "1" ]]; then
+  printf "${YELLOW}⚠ GPU PyTorch: --no-sync prevents uv from reverting GPU torch to CPU.${NC}\n"
+  printf "  After future updates, re-run the installer to refresh dependencies.\n\n"
+fi
 
 if [[ "${IS_UPDATE}" -eq 1 ]]; then
   printf "${YELLOW}Recommended after update (Claude Code):${NC}\n"
   printf "  1) claude mcp remove code-search\n"
-  printf "  2) claude mcp add code-search --scope user -- uv run --directory %s python mcp_server/server.py\n" "${PROJECT_DIR}"
+  printf "  2) claude mcp add code-search --scope user -- %s --directory %s python mcp_server/server.py\n" "${UV_RUN_PRINT}" "${PROJECT_DIR}"
   printf "  3) claude mcp list\n\n"
 else
   printf "${BOLD}Next steps (Claude Code):${NC}\n"
-  printf "  1) claude mcp add code-search --scope user -- uv run --directory %s python mcp_server/server.py\n" "${PROJECT_DIR}"
+  printf "  1) claude mcp add code-search --scope user -- %s --directory %s python mcp_server/server.py\n" "${UV_RUN_PRINT}" "${PROJECT_DIR}"
   printf "  2) claude mcp list\n"
   printf "  3) In Claude Code: index this codebase\n\n"
 fi
 printf "  For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.):\n"
-printf "  uv run --directory %s python scripts/cli.py setup-mcp\n\n" "${PROJECT_DIR}"
+printf "  %s --directory %s python scripts/cli.py setup-mcp\n\n" "${UV_RUN_PRINT}" "${PROJECT_DIR}"
 
 printf "${YELLOW}Notes:${NC}\n"
 printf "%s\n" "• Selected embedding model: ${MODEL_NAME}"

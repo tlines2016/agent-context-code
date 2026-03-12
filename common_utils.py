@@ -173,6 +173,58 @@ def save_local_install_config(
     return config_path
 
 
+def detect_gpu() -> str:
+    """Detect the best available compute device.
+
+    Returns ``"cuda"`` (NVIDIA / AMD ROCm via HIP), ``"mps"`` (Apple
+    Silicon), or ``"cpu"``.  Safe to call even when PyTorch is not
+    installed — falls back to ``"cpu"`` on ImportError.
+    """
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+
+    if torch.cuda.is_available():
+        return "cuda"
+    try:
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def has_explicit_model_choice(storage_dir: Optional[Path] = None) -> bool:
+    """Check whether the user has explicitly configured an embedding model.
+
+    Returns True when ``install_config.json`` contains an
+    ``embedding_model`` key (string or dict with ``model_name``).
+    """
+    config = load_local_install_config(storage_dir)
+    em = config.get("embedding_model")
+    if em is None:
+        return False
+    if isinstance(em, str):
+        return bool(em.strip())
+    if isinstance(em, dict):
+        return bool(em.get("model_name", "").strip())
+    return False
+
+
+def has_explicit_reranker_choice(storage_dir: Optional[Path] = None) -> bool:
+    """Check whether the user has explicitly configured a reranker.
+
+    Returns True when ``install_config.json`` contains a ``reranker``
+    key with an ``enabled`` field that is not None.
+    """
+    config = load_local_install_config(storage_dir)
+    rr = config.get("reranker")
+    if not isinstance(rr, dict):
+        return False
+    return "enabled" in rr
+
+
 def load_reranker_config(storage_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Load the reranker section from install_config.json.
 

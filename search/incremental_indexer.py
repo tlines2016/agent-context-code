@@ -35,6 +35,7 @@ class IncrementalIndexResult:
     time_taken: float
     success: bool
     error: Optional[str] = None
+    skipped_files: List[Dict] = field(default_factory=list)
     graph_stats: Dict = field(default_factory=dict)
     graph_sync_ok: bool = True
     graph_sync_error: Optional[str] = None
@@ -52,6 +53,9 @@ class IncrementalIndexResult:
             'error': self.error,
             'graph_sync_ok': self.graph_sync_ok,
         }
+        if self.skipped_files:
+            result['skipped_files'] = self.skipped_files
+            result['skipped_file_count'] = len(self.skipped_files)
         if self.graph_sync_error:
             result['graph_sync_error'] = self.graph_sync_error
         if self.graph_stats:
@@ -67,6 +71,7 @@ class AddChunksResult:
     chunking_errors: List[str] = field(default_factory=list)
     embedding_error: Optional[str] = None
     graph_index_errors: List[str] = field(default_factory=list)
+    skipped_files: List[Dict] = field(default_factory=list)
 
 
 class IncrementalIndexer:
@@ -256,6 +261,7 @@ class IncrementalIndexer:
                 time_taken=time.time() - start_time,
                 success=sync_ok,
                 error="; ".join(sync_errors) if sync_errors else None,
+                skipped_files=add_result.skipped_files,
                 graph_stats=graph_stats,
                 graph_sync_ok=graph_sync_ok,
                 graph_sync_error=graph_sync_error,
@@ -308,6 +314,9 @@ class IncrementalIndexer:
             # Filter supported files
             supported_files = [f for f in all_files if self.chunker.is_supported(f)]
             
+            # Reset skipped files tracking before each session.
+            self.chunker.reset_skipped_files()
+
             # Collect all chunks first, then embed in a single pass for efficiency
             all_chunks = []
             chunking_errors: List[str] = []
@@ -409,6 +418,15 @@ class IncrementalIndexer:
                 else {}
             )
 
+            skipped = list(self.chunker.skipped_files)
+            if skipped:
+                total_skipped_bytes = sum(f.get("size_bytes", 0) for f in skipped)
+                logger.warning(
+                    "%d structured file(s) skipped (total %s bytes)",
+                    len(skipped),
+                    total_skipped_bytes,
+                )
+
             return IncrementalIndexResult(
                 files_added=len(supported_files),
                 files_removed=0,
@@ -418,6 +436,7 @@ class IncrementalIndexer:
                 time_taken=time.time() - start_time,
                 success=sync_ok,
                 error="; ".join(sync_errors) if sync_errors else None,
+                skipped_files=skipped,
                 graph_stats=graph_stats,
                 graph_sync_ok=graph_sync_ok,
                 graph_sync_error=graph_sync_error,
@@ -495,10 +514,13 @@ class IncrementalIndexer:
             Number of chunks added
         """
         files_to_index = self.change_detector.get_files_to_reindex(changes)
-        
+
+        # Reset skipped files tracking before each session.
+        self.chunker.reset_skipped_files()
+
         # Filter supported files
         supported_files = [f for f in files_to_index if self.chunker.is_supported(f)]
-        
+
         # Collect all chunks first, then embed in a single pass
         chunks_to_embed = []
         chunking_errors: List[str] = []
@@ -542,6 +564,7 @@ class IncrementalIndexer:
             chunking_errors=chunking_errors,
             embedding_error=embedding_error,
             graph_index_errors=graph_index_errors,
+            skipped_files=list(self.chunker.skipped_files),
         )
     
     

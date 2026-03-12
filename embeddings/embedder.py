@@ -8,9 +8,9 @@ import numpy as np
 
 from chunking.code_chunk import CodeChunk
 from embeddings.embedding_models_register import AVAILABLE_MODELS
-from embeddings.model_catalog import DEFAULT_EMBEDDING_MODEL, EmbeddingModelConfig, get_model_config
+from embeddings.model_catalog import DEFAULT_EMBEDDING_MODEL, GPU_DEFAULT_EMBEDDING_MODEL, EmbeddingModelConfig, get_model_config
 from embeddings.sentence_transformer import SentenceTransformerModel
-from common_utils import get_storage_dir, load_local_install_config
+from common_utils import get_storage_dir, load_local_install_config, detect_gpu, has_explicit_model_choice
 
 # Chunk types that represent members of a parent type (class, impl block,
 # interface, …).  Embedding content for these includes a parent-context
@@ -63,7 +63,38 @@ def _resolve_model_config(model_name: Optional[str]) -> EmbeddingModelConfig:
         }
         return replace(config, **overrides)
 
-    return get_model_config(DEFAULT_EMBEDDING_MODEL)
+    return _maybe_gpu_upgrade_model(get_model_config(DEFAULT_EMBEDDING_MODEL))
+
+
+def _maybe_gpu_upgrade_model(default_config: EmbeddingModelConfig) -> EmbeddingModelConfig:
+    """Auto-upgrade to the GPU-optimised model when a GPU is available.
+
+    Only upgrades when:
+    1. The resolved model is still the CPU default (no explicit user choice).
+    2. A GPU (CUDA or MPS) is detected at runtime.
+    3. The user has not set an explicit model in install_config.json.
+
+    This ensures GPU users get better defaults transparently while
+    respecting any explicit user configuration.
+    """
+    if default_config.model_name != DEFAULT_EMBEDDING_MODEL:
+        return default_config
+
+    if has_explicit_model_choice():
+        return default_config
+
+    device = detect_gpu()
+    if device in ("cuda", "mps"):
+        _logger = logging.getLogger(__name__)
+        _logger.info(
+            "GPU detected (%s). Auto-upgrading embedding model from %s to %s",
+            device,
+            DEFAULT_EMBEDDING_MODEL,
+            GPU_DEFAULT_EMBEDDING_MODEL,
+        )
+        return get_model_config(GPU_DEFAULT_EMBEDDING_MODEL)
+
+    return default_config
 
 
 class CodeEmbedder:

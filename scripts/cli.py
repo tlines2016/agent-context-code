@@ -497,6 +497,43 @@ def cmd_doctor() -> None:
     gpu_info = _detect_gpu_info()
     print(f"  {cyan('ℹ')} Compute device: {gpu_info}")
 
+    # 10b. GPU model auto-selection status
+    try:
+        from common_utils import detect_gpu, has_explicit_model_choice
+        from embeddings.model_catalog import GPU_DEFAULT_EMBEDDING_MODEL
+        device = detect_gpu()
+        if device in ("cuda", "mps"):
+            # Distinguish AMD ROCm from NVIDIA CUDA for the user
+            device_label = device
+            try:
+                import torch
+                if device == "cuda" and hasattr(torch.version, "hip") and torch.version.hip:
+                    device_label = "rocm"
+            except Exception:
+                pass
+            if has_explicit_model_choice():
+                print(f"  {cyan('ℹ')} GPU model auto-upgrade: skipped (explicit model configured, device={device_label})")
+            else:
+                print(f"  {green('✓')} GPU model auto-upgrade: will use {GPU_DEFAULT_EMBEDDING_MODEL} at runtime (device={device_label})")
+        else:
+            # Check if GPU config exists but torch lacks GPU support
+            if storage:
+                gpu_cfg = load_local_install_config(storage_dir=storage).get("gpu", {})
+                if gpu_cfg.get("vendor") and gpu_cfg["vendor"] != "cpu":
+                    saved_url = gpu_cfg.get("torch_index_url", "")
+                    print(f"  {yellow('!')} GPU was detected during install ({gpu_cfg['vendor']}) but PyTorch lacks GPU support")
+                    if saved_url:
+                        print(f"    Fix: uv pip install torch --index-url {saved_url} --reinstall")
+                    else:
+                        print(f"    Fix: run '{_cmd_prefix()} gpu-setup' to install GPU PyTorch")
+                    warnings.append("GPU config exists but PyTorch is CPU-only — GPU acceleration inactive")
+                else:
+                    print(f"  {cyan('ℹ')} GPU model auto-upgrade: not applicable (CPU-only)")
+            else:
+                print(f"  {cyan('ℹ')} GPU model auto-upgrade: not applicable (CPU-only)")
+    except ImportError:
+        pass
+
     # 11. WSL-specific checks
     if is_wsl():
         print(f"\n  {cyan('ℹ')} WSL2 detected – checking Windows interop…")
@@ -1070,7 +1107,32 @@ def _print_json_config(mcp_cmd: str) -> None:
 # ── GPU setup command ─────────────────────────────────────────────────
 
 def cmd_gpu_setup() -> None:
-    """Detect GPU hardware and install the matching PyTorch build."""
+    """Detect GPU hardware and install the matching PyTorch build.
+
+    GPU PyTorch & uv interaction
+    ----------------------------
+    PyTorch publishes GPU builds as PEP 440 local versions (e.g.
+    ``torch==2.10.0+cu128``).  ``uv.lock`` pins the CPU build
+    (``torch==2.10.0`` from PyPI).  Every ``uv run`` or ``uv sync``
+    call silently reverts GPU torch to CPU because uv prefers non-local
+    versions over local ones.
+
+    The install scripts (``install.sh`` / ``install.ps1``) work around
+    this by:
+
+    1. Installing GPU torch via ``uv pip install --index-url``
+    2. Using ``.venv/bin/python`` directly for post-install checks
+       (not ``uv run``, which triggers a sync)
+    3. Adding ``--no-sync`` to all subsequent ``uv run`` calls
+    4. Printing ``--no-sync`` in MCP registration commands
+    5. Saving ``torch_index_url`` to ``install_config.json`` so
+       ``doctor`` can detect mismatches and print recovery commands
+
+    This function (``gpu-setup``) follows the same pattern.  If you
+    modify the GPU torch installation flow, you MUST preserve the
+    ``--no-sync`` workaround or replace it with a solution that
+    prevents ``uv run`` from reverting the GPU build.
+    """
     print(bold("GPU Setup\n"))
 
     # Step 1: Detect hardware

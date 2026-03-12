@@ -26,6 +26,7 @@ class RerankerModelConfig:
     # - "cross_encoder": sentence-transformers CrossEncoder (predict() returns scores)
     # - "causal_lm": Qwen-style yes/no token classification via AutoModelForCausalLM
     architecture: str = "causal_lm"
+    gpu_default: bool = False
 
 
 RERANKER_CATALOG = {
@@ -50,6 +51,7 @@ RERANKER_CATALOG = {
         vram_requirement_gb=2.0,
         cpu_feasible=False,
         architecture="causal_lm",
+        gpu_default=True,
     ),
     "BAAI/bge-reranker-v2-m3": RerankerModelConfig(
         model_name="BAAI/bge-reranker-v2-m3",
@@ -76,6 +78,7 @@ RERANKER_CATALOG = {
 }
 
 DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+GPU_DEFAULT_RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 
 # Short-name reverse lookup: maps e.g. "qwen-reranker-4b" → "Qwen/Qwen3-Reranker-4B"
 RERANKER_SHORT_NAMES = {

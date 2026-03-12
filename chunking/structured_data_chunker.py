@@ -5,7 +5,7 @@ import logging
 import re
 import tomllib
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -34,6 +34,11 @@ class StructuredDataChunker:
         self.root_path = root_path
         self.max_file_lines = max_file_lines
         self.max_file_bytes = max_file_bytes
+        self.skipped_files: List[Dict[str, Any]] = []
+
+    def reset_skipped_files(self) -> None:
+        """Clear the skipped files list (call before each indexing session)."""
+        self.skipped_files = []
 
     def is_supported(self, file_path: str) -> bool:
         """Check whether the file extension is supported."""
@@ -54,12 +59,17 @@ class StructuredDataChunker:
                 return []
 
             if file_size > self.max_file_bytes:
-                logger.info(
+                logger.warning(
                     "Skipping structured data file %s (%s bytes exceeds limit %s bytes)",
                     file_path,
                     file_size,
                     self.max_file_bytes,
                 )
+                self.skipped_files.append({
+                    "path": str(file_path),
+                    "size_bytes": file_size,
+                    "reason": f"exceeds max_file_bytes ({self.max_file_bytes})",
+                })
                 return []
 
         try:
@@ -79,12 +89,17 @@ class StructuredDataChunker:
 
         if self.max_file_lines is not None:
             if line_count > self.max_file_lines:
-                logger.info(
+                logger.warning(
                     "Skipping structured data file %s (%s lines exceeds limit %s lines)",
                     file_path,
                     line_count,
                     self.max_file_lines,
                 )
+                self.skipped_files.append({
+                    "path": str(file_path),
+                    "size_bytes": len(source_text.encode("utf-8")),
+                    "reason": f"exceeds max_file_lines ({self.max_file_lines})",
+                })
                 return []
 
         try:
@@ -274,7 +289,7 @@ class StructuredDataChunker:
             try:
                 rel_path = path.relative_to(self.root_path)
                 folder_parts = list(rel_path.parent.parts)
-                relative_path_str = str(rel_path)
+                relative_path_str = str(rel_path).replace("\\", "/")
             except ValueError:
                 folder_parts = [path.parent.name] if path.parent.name else []
         else:

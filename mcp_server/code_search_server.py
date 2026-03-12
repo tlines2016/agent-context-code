@@ -150,18 +150,66 @@ class CodeSearchServer:
         cache_dir = get_storage_dir() / "models"
         cache_dir.mkdir(exist_ok=True)
         embedder = CodeEmbedder(cache_dir=str(cache_dir))
-        logger.info("Embedder initialized")
+        model_info = embedder.get_model_info()
+        logger.info(
+            "Embedder initialized: model=%s, device=%s",
+            embedder.model_config.model_name,
+            model_info.get("device", "unknown"),
+        )
         return embedder
 
     @lru_cache(maxsize=1)
     def reranker(self):
-        """Lazy initialization of reranker.  Returns None when disabled."""
+        """Lazy initialization of reranker.  Returns None when disabled.
+
+        When a GPU is detected and no explicit reranker config exists,
+        the reranker is auto-enabled with the GPU-optimised default
+        (Qwen3-Reranker-0.6B).
+        """
+        from common_utils import detect_gpu, has_explicit_reranker_choice
+
         config = load_reranker_config()
-        if not config.get("enabled", False):
+        enabled = config.get("enabled", False)
+
+        # Auto-enable reranker on GPU when user hasn't explicitly configured it.
+        if not enabled and not has_explicit_reranker_choice():
+            device = detect_gpu()
+            if device in ("cuda", "mps"):
+                from reranking.reranker_catalog import GPU_DEFAULT_RERANKER_MODEL
+                logger.info(
+                    "GPU detected (%s). Auto-enabling reranker: %s",
+                    device,
+                    GPU_DEFAULT_RERANKER_MODEL,
+                )
+                config = {"enabled": True, "model_name": GPU_DEFAULT_RERANKER_MODEL}
+                enabled = True
+
+        if not enabled:
             logger.info("Reranker not enabled")
             return None
 
         model_name = config.get("model_name", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+        # Guard: if the configured reranker is not CPU-feasible and no GPU
+        # is available at runtime, fall back to the CPU-friendly default.
+        # This handles the case where GPU config was written by the installer
+        # but GPU PyTorch is not available (e.g., uv reverted to CPU torch).
+        device = detect_gpu()
+        if device == "cpu":
+            try:
+                from reranking.reranker_catalog import get_reranker_config, DEFAULT_RERANKER_MODEL
+                rr_meta = get_reranker_config(model_name)
+                if not rr_meta.cpu_feasible:
+                    logger.warning(
+                        "Reranker '%s' is not CPU-feasible and no GPU available. "
+                        "Falling back to '%s'.",
+                        model_name,
+                        DEFAULT_RERANKER_MODEL,
+                    )
+                    model_name = DEFAULT_RERANKER_MODEL
+            except (KeyError, ImportError):
+                pass  # Unknown model — proceed and let the loader decide
+
         try:
             from reranking.reranker import CodeReranker
 
@@ -275,6 +323,7 @@ class CodeSearchServer:
         auto_reindex: bool = True,
         max_age_minutes: float = 5,
         project_path: str = None,
+        max_results_per_file: int = None,
     ) -> str:
         """Implementation of search_code tool."""
         try:
@@ -304,6 +353,7 @@ class CodeSearchServer:
                     file_pattern=file_pattern,
                     chunk_type=chunk_type,
                     include_context=include_context,
+                    max_results_per_file=max_results_per_file,
                 )
 
             if auto_reindex and self._current_project:
@@ -352,7 +402,8 @@ class CodeSearchServer:
                 query=query,
                 k=k,
                 context_depth=context_depth,
-                filters=filters if filters else None
+                filters=filters if filters else None,
+                max_results_per_file=max_results_per_file,
             )
             logger.info(f"Search returned {len(results)} results")
 
@@ -451,6 +502,7 @@ class CodeSearchServer:
         file_pattern: str = None,
         chunk_type: str = None,
         include_context: bool = True,
+        max_results_per_file: int = None,
     ) -> str:
         """Run a search against any indexed project without changing active state.
 
@@ -504,6 +556,7 @@ class CodeSearchServer:
             k=k,
             context_depth=context_depth,
             filters=filters if filters else None,
+            max_results_per_file=max_results_per_file,
         )
 
         formatted_results = [self._format_result(r) for r in results]
@@ -536,12 +589,19 @@ class CodeSearchServer:
         directory_path: str,
         project_name: str = None,
         file_patterns: List[str] = None,
-        incremental: bool = True
+        incremental: bool = True,
+        max_file_bytes: int = None,
     ) -> str:
         """Implementation of index_directory tool.
-        
+
         Builds the vector index and populates the relational graph with
         structural relationships extracted from AST-parsed chunks.
+
+        Parameters
+        ----------
+        max_file_bytes : int, optional
+            Override the maximum structured file size limit (bytes).
+            Files exceeding this are skipped and reported in the response.
         """
         try:
             from search.incremental_indexer import IncrementalIndexer
@@ -566,7 +626,10 @@ class CodeSearchServer:
 
             index_manager = self.get_index_manager(str(directory_path))
             embedder = self.embedder()
-            chunker = MultiLanguageChunker(str(directory_path))
+            chunker = MultiLanguageChunker(
+                str(directory_path),
+                max_structured_file_bytes=max_file_bytes,
+            )
             code_graph = self.get_code_graph(str(directory_path))
 
             incremental_indexer = IncrementalIndexer(
@@ -600,6 +663,10 @@ class CodeSearchServer:
 
             if result.graph_stats:
                 response["graph_stats"] = result.graph_stats
+
+            if result.skipped_files:
+                response["skipped_file_count"] = len(result.skipped_files)
+                response["skipped_files"] = result.skipped_files
 
             if result.error:
                 response["error"] = result.error
@@ -647,6 +714,9 @@ class CodeSearchServer:
         Returns index statistics including storage health metrics:
         version_count, storage_size_mb (from LanceDB table stats).
 
+        Per-file chunk counts are excluded from the response to keep it
+        compact (can be 100 KB+ on large projects).
+
         Additive sync observability fields:
         - ``vector_indexed``: whether the LanceDB table has data.
         - ``graph_indexed``: whether the graph DB exists and has symbols.
@@ -657,7 +727,7 @@ class CodeSearchServer:
         """
         try:
             index_manager = self.get_index_manager()
-            stats = index_manager.get_stats()
+            stats = index_manager.get_stats(summary_only=True)
 
             model_info = self.embedder().get_model_info()
 

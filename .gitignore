@@ -29,6 +29,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 .cursor/
+LOCAL.md
 
 
 # PyInstaller
