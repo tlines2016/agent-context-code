@@ -105,6 +105,10 @@ if (Test-Path (Join-Path $ProjectDir ".git")) {
         try {
             git remote set-url origin $RepoUrl
             git fetch --tags --prune
+            # --ff-only prevents silent overwrites of local work.
+            # Edge case: if someone manually committed inside the install dir and
+            # the branch has diverged, this will throw and abort the script.
+            # Fix: re-run the installer and choose [D]elete and reinstall at the prompt.
             git pull --ff-only
             $repoStatus = "ok"
         } finally {
@@ -241,22 +245,39 @@ else {
     }
 }
 
-# Install GPU-accelerated PyTorch if a compatible GPU was found
+# Install GPU-accelerated PyTorch if a compatible GPU was found.
+# Skip if the correct build is already present to avoid re-downloading on every run.
 if ($torchIndexUrl) {
-    Write-Host "Installing GPU-accelerated PyTorch ($gpuStatus)..."
+    $wantedBuild = $torchIndexUrl.Split('/')[-1]  # e.g. "cu128"
+    $existingBuild = ""
     Push-Location $ProjectDir
     try {
-        uv pip install torch --index-url $torchIndexUrl --reinstall --quiet 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "GPU-accelerated PyTorch installed successfully."
-        }
-        else {
-            Write-Warning "GPU PyTorch installation failed - falling back to CPU."
-            Write-Host "  You can retry later: uv pip install torch --index-url $torchIndexUrl --reinstall"
-            $gpuStatus = "cpu-fallback"
-        }
-    } finally {
+        $torchCheck = uv run python -c "import torch; v=torch.__version__; print(v.split('+')[-1] if '+' in v else 'cpu')" 2>&1
+        if ($LASTEXITCODE -eq 0) { $existingBuild = $torchCheck.ToString().Trim() }
+    } catch {}
+    finally {
         Pop-Location
+    }
+
+    if ($existingBuild -eq $wantedBuild) {
+        Write-Host "GPU-accelerated PyTorch ($wantedBuild) already installed — skipping."
+        # gpuStatus already set correctly above
+    } else {
+        Write-Host "Installing GPU-accelerated PyTorch ($gpuStatus)..."
+        Push-Location $ProjectDir
+        try {
+            uv pip install torch --index-url $torchIndexUrl --reinstall --quiet 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "GPU-accelerated PyTorch installed successfully."
+            }
+            else {
+                Write-Warning "GPU PyTorch installation failed - falling back to CPU."
+                Write-Host "  You can retry later: uv pip install torch --index-url $torchIndexUrl --reinstall"
+                $gpuStatus = "cpu-fallback"
+            }
+        } finally {
+            Pop-Location
+        }
     }
 }
 

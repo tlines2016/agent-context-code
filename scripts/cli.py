@@ -1134,7 +1134,12 @@ def cmd_gpu_setup() -> None:
             timeout=600,
         )
         if result.returncode == 0:
-            print(f"\n  {green('✓')} GPU-accelerated PyTorch installed successfully.\n")
+            print(f"\n  {green('✓')} GPU-accelerated PyTorch installed successfully.")
+            # Update uv.lock so future `uv run` calls don't revert to CPU torch.
+            # Without this, uv re-syncs from the lockfile on every `uv run` and
+            # overwrites the GPU build.  `uv lock --upgrade-package torch` refreshes
+            # only the torch entry while leaving everything else pinned.
+            _update_torch_lockfile(index_url)
             _verify_torch_gpu()
         else:
             print(f"\n  {red('✗')} Installation failed. Retry manually:")
@@ -1144,6 +1149,30 @@ def cmd_gpu_setup() -> None:
         print(f"    uv pip install torch --index-url {index_url} --reinstall\n")
     except Exception as exc:
         print(f"\n  {red('✗')} Installation error: {exc}\n")
+
+
+def _update_torch_lockfile(index_url: str) -> None:
+    """Print --no-sync instructions after a GPU torch install.
+
+    uv syncs the venv against uv.lock before every `uv run`.  After gpu-setup
+    installs GPU torch, the next `uv run` reverts it to CPU (uv.lock still pins
+    the CPU build).  The correct fix is `--no-sync` on the MCP server command,
+    which skips the venv sync and uses whatever is in the venv as-is.
+
+    The install script already sets up the venv correctly (uv sync + GPU torch),
+    so --no-sync is safe — it just prevents the silent revert.
+    """
+    project_dir = Path(__file__).resolve().parent.parent
+    mcp_dir = str(project_dir)
+
+    print(f"\n  {yellow('!')} Important: uv reverts GPU torch on every `uv run` (syncs from uv.lock).")
+    print(f"  Add --no-sync to your MCP server command to prevent this:\n")
+    print(f"    claude mcp remove code-search")
+    if sys.platform == "win32":
+        print(f'    claude mcp add code-search --scope user -- uv run --no-sync --directory "{mcp_dir}" python mcp_server/server.py')
+    else:
+        print(f"    claude mcp add code-search --scope user -- uv run --no-sync --directory '{mcp_dir}' python mcp_server/server.py")
+    print(f"\n  --no-sync skips the venv sync step so GPU torch is not overwritten.\n")
 
 
 def _detect_gpu_for_setup():

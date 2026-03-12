@@ -131,6 +131,10 @@ if [[ -d "${PROJECT_DIR}/.git" ]]; then
     msg "Updating repository..."
     git -C "${PROJECT_DIR}" remote set-url origin "${REPO_URL}"
     git -C "${PROJECT_DIR}" fetch --tags --prune
+    # --ff-only prevents silent overwrites of local work.
+    # Edge case: if someone manually committed inside the install dir and
+    # the branch has diverged, this will exit non-zero and abort the script.
+    # Fix: re-run the installer and choose [d]elete and reinstall at the prompt.
     git -C "${PROJECT_DIR}" pull --ff-only
     REPO_STATUS="ok"
   fi
@@ -244,15 +248,25 @@ else
   msg "No GPU detected. Embedding generation will use CPU (still works fine)."
 fi
 
-# Install GPU-accelerated PyTorch if a compatible GPU was found
+# Install GPU-accelerated PyTorch if a compatible GPU was found.
+# Skip if the correct build is already present to avoid re-downloading on every run.
 if [[ -n "${TORCH_INDEX_URL}" ]]; then
-  msg "Installing GPU-accelerated PyTorch (${GPU_STATUS})..."
-  if (cd "${PROJECT_DIR}" && uv pip install torch --index-url "${TORCH_INDEX_URL}" --reinstall --quiet 2>&1); then
-    msg "GPU-accelerated PyTorch installed successfully."
+  WANTED_BUILD="${TORCH_INDEX_URL##*/}"  # e.g. "cu128"
+  EXISTING_BUILD=$(cd "${PROJECT_DIR}" && uv run python -c \
+    "import torch; v=torch.__version__; print(v.split('+')[-1] if '+' in v else 'cpu')" \
+    2>/dev/null || echo "none")
+
+  if [[ "${EXISTING_BUILD}" == "${WANTED_BUILD}" ]]; then
+    msg "GPU-accelerated PyTorch (${WANTED_BUILD}) already installed — skipping."
   else
-    printf "${YELLOW}⚠ GPU PyTorch installation failed — falling back to CPU.${NC}\n"
-    printf "  You can retry later: uv pip install torch --index-url %s --reinstall\n" "${TORCH_INDEX_URL}"
-    GPU_STATUS="cpu-fallback"
+    msg "Installing GPU-accelerated PyTorch (${GPU_STATUS})..."
+    if (cd "${PROJECT_DIR}" && uv pip install torch --index-url "${TORCH_INDEX_URL}" --reinstall --quiet 2>&1); then
+      msg "GPU-accelerated PyTorch installed successfully."
+    else
+      printf "${YELLOW}⚠ GPU PyTorch installation failed — falling back to CPU.${NC}\n"
+      printf "  You can retry later: uv pip install torch --index-url %s --reinstall\n" "${TORCH_INDEX_URL}"
+      GPU_STATUS="cpu-fallback"
+    fi
   fi
 elif [[ "${GPU_VENDOR}" == "mps" ]]; then
   msg "Apple Silicon MPS: standard PyTorch build includes MPS support — no extra install needed."
