@@ -34,10 +34,12 @@ def _check_gpu_hint() -> None:
         return  # No GPU or MPS (no action needed)
 
     logger = logging.getLogger(__name__)
-    logger.info(
-        "GPU detected (%s) but PyTorch is CPU-only. "
-        "Run 'gpu-setup' for GPU acceleration.",
+    logger.warning(
+        "GPU detected (%s) but PyTorch is CPU-only (torch %s). "
+        "Server running without GPU acceleration. "
+        "Fix: re-run the install script or 'gpu-setup' CLI command.",
         vendor,
+        getattr(__import__("torch"), "__version__", "?"),
     )
 
 

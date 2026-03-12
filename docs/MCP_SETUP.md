@@ -107,7 +107,9 @@ cd agent-context-code
 uv sync
 ```
 
-The MCP server is launched through `uv run`:
+The MCP server is launched through `uv run`. On GPU machines, add the
+appropriate `--extra` flag (e.g. `--extra cu128`) so PyTorch resolves to the
+GPU build. The install script does this automatically when it auto-registers.
 
 | OS | Default install directory | MCP command |
 |----|--------------------------|-------------|

@@ -252,6 +252,9 @@ curl -fsSL https://raw.githubusercontent.com/tlines2016/agent-context-code/main/
 
 **For Claude Code:**
 
+The install script auto-registers the MCP server when `claude` is available.
+If you need to register manually:
+
 macOS / Linux / Git Bash / WSL:
 
 ```bash
@@ -263,6 +266,11 @@ Windows PowerShell:
 ```powershell
 claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA\agent-context-code" python mcp_server/server.py
 ```
+
+> **GPU users:** If the install script detected a GPU, add `--extra cu128`
+> (or `cu126`) after `uv run` to use GPU-accelerated PyTorch. The install
+> script includes this automatically when it auto-registers. You can also
+> run `gpu-setup` to detect and configure GPU support at any time.
 
 **For other MCP clients** (Cursor, Codex CLI, Gemini CLI, VS Code extensions, etc.):
 

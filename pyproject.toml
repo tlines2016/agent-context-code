@@ -125,6 +125,10 @@ test = [
 # Default (no extra): CPU torch from PyPI.
 cu126 = ["torch>=2.10.0"]
 cu128 = ["torch>=2.10.0"]
+rocm = [                                            # ROCm 7.1+ (Linux only)
+    "torch>=2.10.0; sys_platform == 'linux'",
+    "triton-rocm>=3.6.0; sys_platform == 'linux'",
+]
 
 [project.urls]
 Homepage = "https://github.com/tlines2016/agent-context-code"
@@ -151,6 +155,7 @@ conflicts = [
     [
         { extra = "cu126" },
         { extra = "cu128" },
+        { extra = "rocm" },
     ],
 ]
 
@@ -158,6 +163,10 @@ conflicts = [
 torch = [
     { index = "pytorch-cu126", extra = "cu126" },
     { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-rocm", extra = "rocm" },
+]
+triton-rocm = [
+    { index = "pytorch-rocm", extra = "rocm" },
 ]
 
 [[tool.uv.index]]
@@ -169,3 +178,9 @@ explicit = true
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.1"
+explicit = true
+

@@ -303,14 +303,16 @@ def detect_gpu_index_url() -> tuple[str, str | None, str | None, str | None]:
             parts = rocm_ver.split(".")
             rocm_major = int(parts[0])
             rocm_minor = int(parts[1]) if len(parts) > 1 else 0
-            if rocm_major >= 7 or (rocm_major == 6 and rocm_minor >= 2):
+            if rocm_major >= 7 and rocm_minor >= 1:
+                url = "https://download.pytorch.org/whl/rocm7.1"
+            elif rocm_major >= 7 or (rocm_major == 6 and rocm_minor >= 2):
                 url = "https://download.pytorch.org/whl/rocm6.2.4"
             elif rocm_major == 6:
                 url = "https://download.pytorch.org/whl/rocm6.1"
             # ROCm < 6.0 → no compatible PyTorch wheels, url stays None
         else:
             # ROCm tools found but version unknown — try latest stable
-            url = "https://download.pytorch.org/whl/rocm6.2.4"
+            url = "https://download.pytorch.org/whl/rocm7.1"
         return ("amd", rocm_ver, gpu_name, url)
 
     return ("cpu", None, None, None)

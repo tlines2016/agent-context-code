@@ -159,7 +159,7 @@ fi
 # if detection fails or SKIP_GPU=1.
 #
 # How GPU persistence works:
-# pyproject.toml defines GPU extras (cu118..cu128, rocm) with [tool.uv.sources]
+# pyproject.toml defines GPU extras (cu126, cu128) with [tool.uv.sources]
 # and [tool.uv.conflicts] that route torch to GPU-specific PyTorch indexes.
 # `uv sync --extra cu128` installs GPU torch.  The MCP server command
 # includes `--extra <name>` so `uv run` syncs GPU torch automatically.
@@ -228,14 +228,15 @@ elif command -v rocminfo >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1;
   msg "AMD GPU detected: ${GPU_NAME:-unknown} (ROCm ${ROCM_VER:-unknown})"
 
   # ROCm PyTorch wheels — pick the best available index.
+  # ROCm 7.1+ has torch 2.10.0 wheels (Linux only).
   # Strix Halo APUs (Ryzen AI Max) require ROCm 6.2+.
   if [[ -n "${ROCM_VER}" ]]; then
     ROCM_MAJOR="${ROCM_VER%%.*}"
     ROCM_MINOR="${ROCM_VER#*.}"
-    if [[ "${ROCM_MAJOR}" -ge 7 ]]; then
-      TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.2.4"
-      GPU_STATUS="amd-rocm6.2"
-    elif [[ "${ROCM_MAJOR}" -eq 6 ]] && [[ "${ROCM_MINOR}" -ge 2 ]]; then
+    if [[ "${ROCM_MAJOR}" -ge 7 ]] && [[ "${ROCM_MINOR}" -ge 1 ]]; then
+      TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm7.1"
+      GPU_STATUS="amd-rocm7.1"
+    elif [[ "${ROCM_MAJOR}" -ge 7 ]] || ([[ "${ROCM_MAJOR}" -eq 6 ]] && [[ "${ROCM_MINOR}" -ge 2 ]]); then
       TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.2.4"
       GPU_STATUS="amd-rocm6.2"
     elif [[ "${ROCM_MAJOR}" -eq 6 ]]; then
@@ -247,7 +248,7 @@ elif command -v rocminfo >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1;
     fi
   else
     # ROCm tools found but version unknown — try the latest stable index
-    TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.2.4"
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm7.1"
     GPU_STATUS="amd-rocm-auto"
   fi
 else
@@ -255,14 +256,13 @@ else
 fi
 
 # Map TORCH_INDEX_URL to the pyproject.toml extra name.
+# Only cu126, cu128, and rocm7.1 have torch>=2.10.0 wheels.
+# Older CUDA and ROCm <7.1 fall back to uv pip install.
 GPU_EXTRA=""
 case "${TORCH_INDEX_URL}" in
-  */cu118)   GPU_EXTRA="cu118" ;;
-  */cu121)   GPU_EXTRA="cu121" ;;
-  */cu124)   GPU_EXTRA="cu124" ;;
-  */cu126)   GPU_EXTRA="cu126" ;;
-  */cu128)   GPU_EXTRA="cu128" ;;
-  */rocm*)   GPU_EXTRA="rocm"  ;;
+  */cu126)     GPU_EXTRA="cu126" ;;
+  */cu128)     GPU_EXTRA="cu128" ;;
+  */rocm7.1)   GPU_EXTRA="rocm"  ;;
 esac
 
 # Install GPU-accelerated PyTorch via pyproject.toml extras.
@@ -274,12 +274,25 @@ if [[ -n "${GPU_EXTRA}" ]]; then
     printf "${YELLOW}⚠ uv sync --extra ${GPU_EXTRA} failed — trying uv pip install fallback...${NC}\n"
     if (cd "${PROJECT_DIR}" && uv pip install torch --index-url "${TORCH_INDEX_URL}" --reinstall --quiet 2>&1); then
       msg "GPU PyTorch installed via fallback (uv pip install)."
+      # Clear GPU_EXTRA since pip-installed torch is outside uv's extras system
+      GPU_EXTRA=""
     else
       printf "${YELLOW}⚠ GPU PyTorch installation failed — falling back to CPU.${NC}\n"
       printf "  You can retry later: uv run --directory %s python scripts/cli.py gpu-setup\n" "${PROJECT_DIR}"
       GPU_STATUS="cpu-fallback"
       GPU_EXTRA=""
     fi
+  fi
+elif [[ -n "${TORCH_INDEX_URL}" && "${GPU_VENDOR}" != "cpu" && "${GPU_VENDOR}" != "mps" ]]; then
+  # Older CUDA/ROCm without a pyproject.toml extra — use uv pip install directly
+  msg "Installing GPU-accelerated PyTorch via pip (${GPU_STATUS})..."
+  if (cd "${PROJECT_DIR}" && uv pip install torch --index-url "${TORCH_INDEX_URL}" --reinstall --quiet 2>&1); then
+    msg "GPU PyTorch installed via uv pip install."
+    msg "Note: older CUDA versions require --no-sync in uv run to prevent torch downgrade."
+  else
+    printf "${YELLOW}⚠ GPU PyTorch installation failed — falling back to CPU.${NC}\n"
+    printf "  You can retry later: uv run --directory %s python scripts/cli.py gpu-setup\n" "${PROJECT_DIR}"
+    GPU_STATUS="cpu-fallback"
   fi
 elif [[ "${GPU_VENDOR}" == "mps" ]]; then
   msg "Apple Silicon MPS: standard PyTorch build includes MPS support — no extra install needed."
@@ -322,11 +335,11 @@ if os.path.exists(config_path):
         pass
 config['embedding_model'] = {'model_name': sys.argv[2], 'auto_configured': True}
 config['reranker'] = {'model_name': sys.argv[3], 'enabled': True, 'recall_k': 50, 'auto_configured': True}
-config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6]}
+config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6], 'extra': sys.argv[7]}
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
     f.write('\n')
-" "${CONFIG_FILE}" "${GPU_EMBED_MODEL}" "${GPU_RERANKER_MODEL}" "${GPU_VENDOR}" "${TORCH_INDEX_URL:-}" "${GPU_STATUS}" 2>/dev/null) || true
+" "${CONFIG_FILE}" "${GPU_EMBED_MODEL}" "${GPU_RERANKER_MODEL}" "${GPU_VENDOR}" "${TORCH_INDEX_URL:-}" "${GPU_STATUS}" "${GPU_EXTRA}" 2>/dev/null) || true
     # Update MODEL_NAME so the download step fetches the GPU model
     MODEL_NAME="${GPU_EMBED_MODEL}"
     GPU_RERANKER_AUTO="${GPU_RERANKER_MODEL}"
@@ -429,20 +442,34 @@ if [[ -n "${GPU_EXTRA}" ]]; then
   UV_EXTRA_FLAG="--extra ${GPU_EXTRA} "
 fi
 
+MCP_CMD="uv run ${UV_EXTRA_FLAG}--directory ${PROJECT_DIR} python mcp_server/server.py"
+
 printf "${BOLD}MCP server command:${NC}\n"
-printf "  uv run %s--directory %s python mcp_server/server.py\n\n" "${UV_EXTRA_FLAG}" "${PROJECT_DIR}"
+printf "  %s\n\n" "${MCP_CMD}"
 printf "  If installed via PyPI: agent-context-local-mcp\n\n"
 
-if [[ "${IS_UPDATE}" -eq 1 ]]; then
-  printf "${YELLOW}Recommended after update (Claude Code):${NC}\n"
-  printf "  1) claude mcp remove code-search\n"
-  printf "  2) claude mcp add code-search --scope user -- uv run %s--directory %s python mcp_server/server.py\n" "${UV_EXTRA_FLAG}" "${PROJECT_DIR}"
-  printf "  3) claude mcp list\n\n"
+# ── Auto-register MCP server with Claude Code ─────────────────────────
+if command -v claude >/dev/null 2>&1; then
+  msg "Auto-registering MCP server with Claude Code..."
+  claude mcp remove code-search --scope user 2>/dev/null || true
+  if claude mcp add code-search --scope user -- uv run ${UV_EXTRA_FLAG}--directory "${PROJECT_DIR}" python mcp_server/server.py; then
+    printf "  ${GREEN}✓${NC} MCP server registered. Verify with: claude mcp list\n\n"
+  else
+    printf "  ${YELLOW}!${NC} Auto-registration failed. Register manually:\n"
+    printf "    claude mcp add code-search --scope user -- %s\n\n" "${MCP_CMD}"
+  fi
 else
-  printf "${BOLD}Next steps (Claude Code):${NC}\n"
-  printf "  1) claude mcp add code-search --scope user -- uv run %s--directory %s python mcp_server/server.py\n" "${UV_EXTRA_FLAG}" "${PROJECT_DIR}"
-  printf "  2) claude mcp list\n"
-  printf "  3) In Claude Code: index this codebase\n\n"
+  if [[ "${IS_UPDATE}" -eq 1 ]]; then
+    printf "${YELLOW}Recommended after update (Claude Code):${NC}\n"
+    printf "  1) claude mcp remove code-search\n"
+    printf "  2) claude mcp add code-search --scope user -- %s\n" "${MCP_CMD}"
+    printf "  3) claude mcp list\n\n"
+  else
+    printf "${BOLD}Next steps (Claude Code):${NC}\n"
+    printf "  1) claude mcp add code-search --scope user -- %s\n" "${MCP_CMD}"
+    printf "  2) claude mcp list\n"
+    printf "  3) In Claude Code: index this codebase\n\n"
+  fi
 fi
 printf "  For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.):\n"
 printf "  uv run %s--directory %s python scripts/cli.py setup-mcp\n\n" "${UV_EXTRA_FLAG}" "${PROJECT_DIR}"

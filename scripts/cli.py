@@ -156,24 +156,42 @@ def get_platform_label() -> str:
     return {"Windows": "Windows", "Darwin": "macOS", "Linux": "Linux"}.get(system, system)
 
 
+def _gpu_extra_flag() -> str:
+    """Return ``--extra <name> `` if a GPU extra is configured, else ``""``."""
+    try:
+        config = load_local_install_config()
+        extra = config.get("gpu", {}).get("extra", "")
+        if extra:
+            return f"--extra {extra} "
+    except Exception:
+        pass
+    return ""
+
+
 def _cmd_prefix() -> str:
     """CLI command prefix appropriate for install mode."""
     if is_installed_package() and shutil.which("agent-context-local"):
         return "agent-context-local"
     install_dir = get_default_install_dir()
+    extra_flag = _gpu_extra_flag()
     if is_windows():
-        return f'uv run --directory "{install_dir}" python scripts/cli.py'
-    return f"uv run --directory {install_dir} python scripts/cli.py"
+        return f'uv run {extra_flag}--directory "{install_dir}" python scripts/cli.py'
+    return f"uv run {extra_flag}--directory {install_dir} python scripts/cli.py"
 
 
 def _mcp_server_cmd() -> str:
-    """MCP server command appropriate for install mode."""
+    """MCP server command appropriate for install mode.
+
+    Reads ``install_config.json`` to include ``--extra`` when a GPU
+    extra is configured, so ``uv run`` resolves GPU PyTorch automatically.
+    """
     if is_installed_package() and shutil.which("agent-context-local-mcp"):
         return "agent-context-local-mcp"
     install_dir = get_default_install_dir()
+    extra_flag = _gpu_extra_flag()
     if is_windows():
-        return f'uv run --directory "{install_dir}" python mcp_server/server.py'
-    return f"uv run --directory {install_dir} python mcp_server/server.py"
+        return f'uv run {extra_flag}--directory "{install_dir}" python mcp_server/server.py'
+    return f"uv run {extra_flag}--directory {install_dir} python mcp_server/server.py"
 
 
 def get_default_install_dir() -> Path:
@@ -1126,7 +1144,7 @@ def cmd_gpu_setup() -> None:
         if sys.platform == "win32":
             print(f'    claude mcp add code-search --scope user -- uv run --directory "{mcp_dir}" python mcp_server/server.py')
         else:
-            print(f"    claude mcp add code-search --scope user -- uv run --directory '{mcp_dir}' python mcp_server/server.py")
+            print(f"    claude mcp add code-search --scope user -- uv run --directory {mcp_dir} python mcp_server/server.py")
         print()
         return
 
@@ -1221,43 +1239,51 @@ def cmd_gpu_setup() -> None:
     except Exception:
         pass  # Non-critical
 
-    # Step 5: Print MCP registration command with --extra
+    # Step 5: Auto-register MCP with --extra flag
     mcp_dir = str(project_dir)
     print(f"\n  {green('✓')} GPU-accelerated PyTorch installed successfully.")
     print(f"  Use --extra {extra_name} in uv run commands for GPU torch.\n")
 
-    print(f"  Register the MCP server:")
-    print(f"    claude mcp remove code-search")
-    if sys.platform == "win32":
-        print(f'    claude mcp add code-search --scope user -- uv run --extra {extra_name} --directory "{mcp_dir}" python mcp_server/server.py')
+    mcp_cmd_parts = ["uv", "run", "--extra", extra_name, "--directory", mcp_dir,
+                     "python", "mcp_server/server.py"]
+    if shutil.which("claude"):
+        print(f"  Auto-registering MCP server with Claude Code...")
+        subprocess.run(["claude", "mcp", "remove", "code-search", "--scope", "user"],
+                       capture_output=True)
+        reg = subprocess.run(
+            ["claude", "mcp", "add", "code-search", "--scope", "user", "--"] + mcp_cmd_parts,
+            capture_output=True,
+        )
+        if reg.returncode == 0:
+            print(f"  {green('✓')} MCP server registered. Verify with: claude mcp list\n")
+        else:
+            mcp_cmd_str = " ".join(mcp_cmd_parts)
+            print(f"  {yellow('!')} Auto-registration failed. Register manually:")
+            print(f"    claude mcp add code-search --scope user -- {mcp_cmd_str}\n")
     else:
-        print(f"    claude mcp add code-search --scope user -- uv run --extra {extra_name} --directory '{mcp_dir}' python mcp_server/server.py")
-    print()
+        mcp_cmd_str = " ".join(mcp_cmd_parts)
+        print(f"  Register the MCP server:")
+        print(f"    claude mcp remove code-search")
+        print(f"    claude mcp add code-search --scope user -- {mcp_cmd_str}")
+        print()
 
     _verify_torch_gpu()
 
 
 # Map PyTorch index URLs to pyproject.toml extra names.
-# Only indexes with torch>=2.10.0 wheels are included.  Older CUDA/ROCm
-# versions fall through to the uv pip install fallback in gpu-setup.
+# Only cu126, cu128, and rocm7.1 have torch>=2.10.0 wheels.
+# Older CUDA (cu118/cu121/cu124) and ROCm <7.1 fall through to the
+# uv pip install fallback in gpu-setup.
 _INDEX_URL_TO_EXTRA = {
     "https://download.pytorch.org/whl/cu126": "cu126",
     "https://download.pytorch.org/whl/cu128": "cu128",
+    "https://download.pytorch.org/whl/rocm7.1": "rocm",
 }
 
 
 def _index_url_to_extra(index_url: str) -> Optional[str]:
     """Map a PyTorch index URL to the corresponding pyproject.toml extra name."""
     return _INDEX_URL_TO_EXTRA.get(index_url)
-    if not uv_toml.exists():
-        return None
-    try:
-        import re
-        content = uv_toml.read_text(encoding="utf-8")
-        m = re.search(r'url\s*=\s*"([^"]+)"', content)
-        return m.group(1) if m else None
-    except Exception:
-        return None
 
 
 def _verify_torch_gpu() -> None:

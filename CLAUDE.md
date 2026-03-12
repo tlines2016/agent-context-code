@@ -46,6 +46,9 @@ Remote install commands are documented in `README.md`.
 
 ## Claude MCP Registration
 
+The install script auto-registers with the correct GPU flags. For manual
+registration, add `--extra cu128` (or `cu126`) after `uv run` on GPU machines.
+
 macOS/Linux:
 
 ```bash
