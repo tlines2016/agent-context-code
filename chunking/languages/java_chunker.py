@@ -20,6 +20,7 @@ class JavaChunker(LanguageChunker):
             'interface_declaration',
             'enum_declaration',
             'annotation_type_declaration',
+            'record_declaration',
         }
 
     def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
@@ -37,11 +38,15 @@ class JavaChunker(LanguageChunker):
         for child in node.children:
             if child.type == 'modifiers':
                 for modifier in child.children:
-                    if modifier.type in ['public', 'private', 'protected', 'static', 'final', 'abstract', 'synchronized']:
+                    if modifier.type in ['public', 'private', 'protected', 'static', 'final', 'abstract', 'synchronized', 'sealed', 'non-sealed']:
                         modifiers.append(self.get_node_text(modifier, source))
 
         if modifiers:
             metadata['modifiers'] = modifiers
+
+        # Mark records with declaration_kind for chunk_type mapping
+        if node.type == 'record_declaration':
+            metadata['declaration_kind'] = 'record'
 
         # Check for generic parameters
         for child in node.children:

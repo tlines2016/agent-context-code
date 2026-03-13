@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tree_sitter import Parser
 
-from chunking.available_languages import get_availiable_language
+from chunking.available_languages import get_available_language
 # map {language: language_obj}
-AVAILABLE_LANGUAGES = get_availiable_language()
+AVAILABLE_LANGUAGES = get_available_language()
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +43,34 @@ class TreeSitterChunk:
 # this set is the primary way to add cross-language container support.
 _CONTAINER_NODE_TYPES: frozenset[str] = frozenset({
     # Class-like containers (all languages)
-    'class_definition',       # Python
-    'class_declaration',      # Java, C#, C++
+    'class_definition',       # Python, Scala
+    'class_declaration',      # Java, C#, C++, Swift (class/struct/enum/extension)
     'object_declaration',     # Kotlin (singleton)
     'companion_object',       # Kotlin companion object
     # Interface & enum containers (members can have methods)
-    'interface_declaration',  # Java, C#, Go
-    'enum_declaration',       # Java, C# (Java enums may contain methods)
+    'interface_declaration',  # Java, C#, Go, PHP
+    'enum_declaration',       # Java, C#, PHP (enums may contain methods)
     'struct_declaration',     # C#, Go
     # Rust-specific containers
     'impl_item',              # impl blocks with associated functions/methods
     'trait_item',             # trait definitions with method signatures/defaults
     # C# namespaces (can contain nested types with their own methods)
     'namespace_declaration',
+    # Java 16+ records (can contain methods)
+    'record_declaration',
+    # Ruby containers
+    'module',                 # Ruby modules (contain classes & methods)
+    'class',                  # Ruby classes, Haskell type classes
+    # PHP containers
+    'trait_declaration',      # PHP traits (contain methods)
+    'namespace_definition',   # PHP namespaces (contain classes)
+    # Swift containers
+    'protocol_declaration',   # Swift protocols (contain method signatures)
+    # Scala containers
+    'object_definition',      # Scala objects (contain methods)
+    'trait_definition',       # Scala traits (contain methods)
+    # Haskell containers
+    'instance',               # Haskell instance declarations (contain method implementations)
 })
 
 
@@ -107,7 +122,16 @@ class LanguageChunker(ABC):
         Returns:
             True if node should be chunked
         """
-        return node.type in self.splittable_node_types
+        if node.type not in self.splittable_node_types:
+            return False
+        # Guard against keyword tokens that share their type name with
+        # declaration nodes (e.g. Ruby's `class` keyword vs `class` declaration,
+        # Haskell's `class` keyword vs type-class declaration).  Leaf nodes
+        # (zero children) are always keywords/punctuation, never meaningful
+        # code constructs worth chunking.
+        if node.child_count == 0:
+            return False
+        return True
 
     def get_node_text(self, node: Any, source: bytes) -> str:
         """Get text content of a node.

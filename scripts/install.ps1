@@ -155,7 +155,7 @@ else {
 # run on the accelerator instead of CPU.
 #
 # How GPU persistence works:
-# pyproject.toml defines GPU extras (cu118..cu128, rocm) with [tool.uv.sources]
+# pyproject.toml defines GPU extras (cu126, cu128) with [tool.uv.sources]
 # and [tool.uv.conflicts] that route torch to GPU-specific PyTorch indexes.
 # `uv sync --extra cu128` installs GPU torch.  The MCP server command
 # includes `--extra <name>` so `uv run` syncs GPU torch automatically.
@@ -224,11 +224,12 @@ elseif (Get-Command rocm-smi -ErrorAction SilentlyContinue) {
     } catch {}
 
     Write-Host "AMD GPU detected: $gpuName"
-
-    # AMD ROCm on Windows — use the ROCm PyTorch index
-    # Note: ROCm on Windows has limited support; HIP SDK must be installed
-    $torchIndexUrl = "https://download.pytorch.org/whl/rocm6.2.4"
-    $gpuStatus = "amd-rocm6.2"
+    # ROCm PyTorch wheels are Linux-only; skip GPU torch install on Windows.
+    Write-Warning "ROCm PyTorch is Linux-only. Falling back to CPU PyTorch on Windows."
+    Write-Host "  For AMD GPU acceleration on Windows, install HIP SDK and re-run on Linux, or wait for a future DirectML release."
+    $torchIndexUrl = ""
+    $gpuVendor = "cpu"
+    $gpuStatus = "amd-rocm-windows-unsupported"
 }
 else {
     # Check for AMD GPU via WMI even without ROCm tools
@@ -252,13 +253,12 @@ else {
 }
 
 # Map torchIndexUrl to pyproject.toml extra name.
+# Only cu126, cu128, and rocm7.1 have torch>=2.10.0 wheels.
+# Older CUDA and ROCm <7.1 fall back to uv pip install.
 $gpuExtra = ""
-if ($torchIndexUrl -match '/cu118$')   { $gpuExtra = "cu118" }
-elseif ($torchIndexUrl -match '/cu121$')   { $gpuExtra = "cu121" }
-elseif ($torchIndexUrl -match '/cu124$')   { $gpuExtra = "cu124" }
-elseif ($torchIndexUrl -match '/cu126$')   { $gpuExtra = "cu126" }
+if ($torchIndexUrl -match '/cu126$')   { $gpuExtra = "cu126" }
 elseif ($torchIndexUrl -match '/cu128$')   { $gpuExtra = "cu128" }
-elseif ($torchIndexUrl -match '/rocm')     { $gpuExtra = "rocm"  }
+elseif ($torchIndexUrl -match '/rocm7\.1$') { $gpuExtra = "rocm"  }
 
 # Install GPU-accelerated PyTorch via pyproject.toml extras.
 if ($gpuExtra) {
@@ -280,6 +280,8 @@ if ($gpuExtra) {
             uv pip install torch --index-url $torchIndexUrl --reinstall --quiet 2>&1
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "GPU PyTorch installed via fallback (uv pip install)."
+                # Clear gpuExtra since pip-installed torch is outside uv's extras system
+                $gpuExtra = ""
             }
             else {
                 Write-Warning "GPU PyTorch installation failed - falling back to CPU."
@@ -293,6 +295,27 @@ if ($gpuExtra) {
             $gpuStatus = "cpu-fallback"
             $gpuExtra = ""
         }
+    }
+    Pop-Location
+}
+elseif ($torchIndexUrl -and $gpuVendor -ne "cpu" -and $gpuVendor -ne "mps") {
+    # Older CUDA/ROCm without a pyproject.toml extra - use uv pip install directly
+    Write-Host "Installing GPU-accelerated PyTorch via pip ($gpuStatus)..."
+    Push-Location $ProjectDir
+    try {
+        uv pip install torch --index-url $torchIndexUrl --reinstall --quiet 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "GPU PyTorch installed via uv pip install."
+            Write-Host "Note: older CUDA versions require --no-sync in uv run to prevent torch downgrade."
+        }
+        else {
+            Write-Warning "GPU PyTorch installation failed - falling back to CPU."
+            Write-Host "  You can retry later: uv run --directory `"$ProjectDir`" python scripts/cli.py gpu-setup"
+            $gpuStatus = "cpu-fallback"
+        }
+    } catch {
+        Write-Warning "GPU PyTorch installation failed - falling back to CPU."
+        $gpuStatus = "cpu-fallback"
     }
     Pop-Location
 }
@@ -317,7 +340,7 @@ if ($gpuVendor -ne "cpu" -and $gpuStatus -ne "cpu-fallback") {
         $gpuRerankerModel = "Qwen/Qwen3-Reranker-0.6B"
         Write-Host "GPU detected - saving GPU-optimised model defaults to install_config.json"
         Write-Host "  Embedding: $gpuEmbedModel"
-        Write-Host "  Reranker:  $gpuRerankerModel (auto-enabled)"
+        Write-Host "  Reranker:  $gpuRerankerModel (pre-configured, opt-in - run 'agent-context-local config reranker on' to enable)"
         # Write config using uv run python (stdlib only) to avoid
         # ConvertFrom-Json -AsHashtable which requires PowerShell 7+.
         New-Item -ItemType Directory -Force -Path $StorageDir | Out-Null
@@ -331,21 +354,20 @@ if os.path.exists(config_path):
     except Exception:
         pass
 config['embedding_model'] = {'model_name': sys.argv[2], 'auto_configured': True}
-config['reranker'] = {'model_name': sys.argv[3], 'enabled': True, 'recall_k': 50, 'auto_configured': True}
-config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6]}
+config['reranker'] = {'model_name': sys.argv[3], 'enabled': False, 'recall_k': 50, 'auto_configured': True}
+config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6], 'extra': sys.argv[7]}
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
     f.write('\n')
-"@ $configFile $gpuEmbedModel $gpuRerankerModel $gpuVendor $(if ($torchIndexUrl) { $torchIndexUrl } else { "" }) $gpuStatus 2>&1 | Out-Null
+"@ $configFile $gpuEmbedModel $gpuRerankerModel $gpuVendor $(if ($torchIndexUrl) { $torchIndexUrl } else { "" }) $gpuStatus $(if ($gpuExtra) { $gpuExtra } else { "" }) 2>&1 | Out-Null
         # Update ModelName so the download step fetches the GPU model
         $ModelName = $gpuEmbedModel
         $gpuRerankerAuto = $gpuRerankerModel
     }
 }
 
-# ── GPU-auto-enabled reranker download ────────────────────────────────
-# When the installer auto-enabled the reranker for GPU, download it now
-# (regardless of CODE_SEARCH_PROFILE) so it's ready on first MCP run.
+# ── GPU reranker pre-download ─────────────────────────────────────────
+# Pre-download the GPU reranker model so it is ready when the user enables it.
 if ($gpuRerankerAuto) {
     Write-Host "Downloading GPU reranker model: $gpuRerankerAuto"
     Push-Location $ProjectDir
@@ -467,28 +489,46 @@ if ($gpuExtra) {
     $uvExtraFlag = "--extra $gpuExtra "
 }
 
+$mcpCmd = "uv run ${uvExtraFlag}--directory `"$ProjectDir`" python mcp_server/server.py"
+
 Write-Host "MCP server command:"
-Write-Host "  uv run ${uvExtraFlag}--directory `"$ProjectDir`" python mcp_server/server.py"
+Write-Host "  $mcpCmd"
 Write-Host "  If installed via PyPI: agent-context-local-mcp"
 Write-Host ""
-Write-Host "Next steps (Claude Code):"
-if ($isUpdate) {
-    Write-Host "1) Remove old server: claude mcp remove code-search"
-    Write-Host "2) Add updated server: claude mcp add code-search --scope user -- uv run ${uvExtraFlag}--directory `"$ProjectDir`" python mcp_server/server.py"
-    Write-Host "3) Verify connection: claude mcp list"
-    Write-Host "4) In Claude Code: index this codebase"
-    Write-Host "5) To switch models later, set CODE_SEARCH_MODEL and re-run this installer"
+
+# Auto-register MCP server with Claude Code
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    Write-Host "Auto-registering MCP server with Claude Code..."
+    claude mcp remove code-search --scope user 2>$null
+    $mcpArgs = @("run")
+    if ($gpuExtra) { $mcpArgs += "--extra", $gpuExtra }
+    $mcpArgs += "--directory", $ProjectDir, "python", "mcp_server/server.py"
+    $regResult = claude mcp add code-search --scope user -- uv @mcpArgs 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  MCP server registered. Verify with: claude mcp list"
+    } else {
+        Write-Host "  Auto-registration failed. Register manually:"
+        Write-Host "    claude mcp add code-search --scope user -- $mcpCmd"
+    }
+    Write-Host ""
+} else {
+    Write-Host "Next steps (Claude Code):"
+    if ($isUpdate) {
+        Write-Host "1) Remove old server: claude mcp remove code-search"
+        Write-Host "2) Add updated server: claude mcp add code-search --scope user -- $mcpCmd"
+        Write-Host "3) Verify connection: claude mcp list"
+        Write-Host "4) In Claude Code: index this codebase"
+    }
+    else {
+        Write-Host "1) Add MCP server: claude mcp add code-search --scope user -- $mcpCmd"
+        Write-Host "2) Verify connection: claude mcp list"
+        Write-Host "3) In Claude Code: index this codebase"
+    }
+    Write-Host ""
 }
-else {
-    Write-Host "1) Add MCP server: claude mcp add code-search --scope user -- uv run ${uvExtraFlag}--directory `"$ProjectDir`" python mcp_server/server.py"
-    Write-Host "2) Verify connection: claude mcp list"
-    Write-Host "3) In Claude Code: index this codebase"
-    Write-Host "4) To switch models later, set CODE_SEARCH_MODEL and re-run this installer"
-}
-Write-Host ""
 Write-Host "For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.):"
-Write-Host "  uv run --directory `"$ProjectDir`" python scripts/cli.py setup-mcp"
+Write-Host "  uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py setup-mcp"
 Write-Host ""
-Write-Host "Diagnostics: uv run --directory `"$ProjectDir`" python scripts/cli.py doctor"
-Write-Host "Setup guide: uv run --directory `"$ProjectDir`" python scripts/cli.py setup-guide"
+Write-Host "Diagnostics: uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py doctor"
+Write-Host "Setup guide: uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py setup-guide"
 Write-Host "Uninstall:   irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/uninstall.ps1 | iex"

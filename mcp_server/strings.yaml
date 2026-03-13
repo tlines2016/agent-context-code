@@ -12,6 +12,7 @@ tools:
       max_results_per_file: cap per file for breadth (e.g. 3–5). Excess pushed to end, not removed.
     Example: search_code("retry logic with exponential backoff", k=10, file_pattern="*.py")
     Cross-project: search_code("auth middleware", project_path="/other/repo")
+    Scores: higher = better match; below ~0.4 = weak. Use chunk_type="function"/"method" for behavioral queries to filter out config/property noise.
 
   find_similar_code: |
     Find code structurally or functionally similar to a known chunk. Returns ranked matches by embedding distance.

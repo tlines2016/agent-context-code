@@ -42,11 +42,13 @@ class IntelligentSearcher:
         embedder: CodeEmbedder,
         reranker: Optional["CodeReranker"] = None,
         reranker_recall_k: int = 50,
+        min_reranker_score: float = 0.0,
     ):
         self.index_manager = index_manager
         self.embedder = embedder
         self._reranker = reranker
         self._reranker_recall_k = reranker_recall_k
+        self._min_reranker_score = min_reranker_score
         self._logger = logging.getLogger(__name__)
         
         # Query patterns for intent detection
@@ -131,11 +133,16 @@ class IntelligentSearcher:
         # Fetch more candidates when reranker is active
         fetch_k = self._reranker_recall_k if self._reranker else k
 
+        # Expand the BM25 query with split CamelCase/snake_case tokens
+        # while keeping the original for vector embedding (models handle
+        # compound terms well).
+        bm25_query = self._preprocess_bm25_query(optimized_query)
+
         raw_results = self.index_manager.search(
             query_embedding,
             fetch_k,
             filters,
-            query_text=optimized_query,
+            query_text=bm25_query,
         )
         self._logger.info(f"Index manager returned {len(raw_results)} raw results")
 
@@ -143,7 +150,12 @@ class IntelligentSearcher:
         reranked = False
         if self._reranker and raw_results:
             try:
-                raw_results = self._reranker.rerank(query, raw_results, top_k=k)
+                raw_results = self._reranker.rerank(
+                    query,
+                    raw_results,
+                    top_k=k,
+                    min_score=self._min_reranker_score,
+                )
                 reranked = True
                 self._logger.info(f"Reranker rescored to {len(raw_results)} results")
             except Exception as exc:
@@ -160,12 +172,62 @@ class IntelligentSearcher:
         # Post-process and rank results
         ranked_results = self._rank_results(search_results, query, intent_tags, reranked=reranked)
 
+        # Deduplicate by chunk_id — hybrid search (BM25 + vector) can
+        # surface the same chunk from both branches before RRF merging.
+        seen_chunk_ids: set = set()
+        deduped_results: List[SearchResult] = []
+        for result in ranked_results:
+            if result.chunk_id not in seen_chunk_ids:
+                seen_chunk_ids.add(result.chunk_id)
+                deduped_results.append(result)
+        ranked_results = deduped_results
+
         # Apply per-file diversity cap (excess pushed to end, not removed).
         if max_results_per_file is not None:
             ranked_results = self._apply_per_file_cap(ranked_results, max_results_per_file)
 
         return ranked_results[:k]
     
+    def _preprocess_bm25_query(self, query: str) -> str:
+        """Expand a query for BM25 by splitting code identifiers.
+
+        CamelCase, snake_case, and kebab-case tokens are split into their
+        constituent words and appended (deduplicated) after the original
+        query.  Tantivy treats space-separated terms as implicit OR, so
+        both the original compound token and the individual words match.
+
+        Example: ``"getUserById"`` → ``"getUserById get User By Id"``
+
+        The original query is always preserved as a prefix so that an exact
+        BM25 match on the unsplit identifier still ranks highest.
+        """
+        if not query or not query.strip():
+            return query
+
+        expanded_tokens: list[str] = []
+        seen: set[str] = set()
+
+        for token in query.split():
+            # Always keep the original token first
+            if token not in seen:
+                expanded_tokens.append(token)
+                seen.add(token)
+
+            # Split CamelCase with two-pass regex:
+            #   Pass 1: acronym-to-word boundary ("HTMLElement" → "HTML Element")
+            #   Pass 2: lowercase-to-uppercase   ("getUserById" → "get User By Id")
+            split = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', token)
+            split = re.sub(r'([a-z])([A-Z])', r'\1 \2', split)
+            # Split snake_case / kebab-case
+            split = split.replace('_', ' ').replace('-', ' ')
+
+            for part in split.split():
+                if part not in seen:
+                    expanded_tokens.append(part)
+                    seen.add(part)
+
+        return ' '.join(expanded_tokens)
+
     def _optimize_query(self, query: str) -> str:
         """Strip leading/trailing whitespace from the query string.
 
@@ -231,6 +293,13 @@ class IntelligentSearcher:
                 'folder_path': '/'.join(folder_structure) if folder_structure else None
             }
         
+        # Thread reranker enrichment data through to the result object
+        if metadata.get("reranked"):
+            context_info["reranked"] = True
+            vector_similarity = metadata.get("vector_similarity")
+            if vector_similarity is not None:
+                context_info["vector_similarity"] = float(vector_similarity)
+
         return SearchResult(
             chunk_id=chunk_id,
             similarity_score=similarity,

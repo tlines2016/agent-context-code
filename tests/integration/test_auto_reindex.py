@@ -12,6 +12,7 @@ from search.indexer import CodeIndexManager
 from embeddings.embedder import CodeEmbedder
 from chunking.multi_language_chunker import MultiLanguageChunker
 from search.searcher import IntelligentSearcher
+from merkle.snapshot_manager import SnapshotManager
 
 
 @pytest.mark.integration
@@ -34,10 +35,17 @@ class TestAutoReindex:
         self.index_manager = CodeIndexManager(str(self.index_dir))
         self.chunker = MultiLanguageChunker(str(self.test_project))
 
+        # Use an isolated SnapshotManager so parallel test runs
+        # don't contaminate the shared ~/.agent_code_search/merkle/ dir.
+        self.snapshot_dir = self.storage_dir / "merkle"
+        self.snapshot_dir.mkdir(exist_ok=True)
+        self.snapshot_manager = SnapshotManager(storage_dir=self.snapshot_dir)
+
         self.indexer = IncrementalIndexer(
             indexer=self.index_manager,
             embedder=self.embedder,
-            chunker=self.chunker
+            chunker=self.chunker,
+            snapshot_manager=self.snapshot_manager,
         )
 
         self.searcher = IntelligentSearcher(self.index_manager, self.embedder)

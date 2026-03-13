@@ -5,11 +5,13 @@ Tests focus on:
 - Stable JSON error/success schema
 - Cross-project non-mutation: providing project_path= must not change
   _current_project, _index_manager, or _searcher on the server instance.
+- Idle offload parsing, offload/restore lifecycle, and lru_cache invariants.
 """
 
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -69,6 +71,109 @@ def _fake_search_result(
         tags=[],
         context_info={},
     )
+
+
+# ---------------------------------------------------------------------------
+# Reranker threshold plumbing
+# ---------------------------------------------------------------------------
+
+class TestRerankerThresholdPlumbing:
+    def test_get_searcher_passes_min_reranker_score_from_config(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 77,
+                 "min_reranker_score": 0.42,
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            result = server.get_searcher("/some/project")
+
+        assert result is mock_searcher
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["reranker_recall_k"] == 77
+        assert kwargs["min_reranker_score"] == pytest.approx(0.42)
+
+    def test_get_searcher_sanitizes_invalid_min_reranker_score(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": "invalid",
+                 "min_reranker_score": -3,
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            server.get_searcher("/some/project")
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["reranker_recall_k"] == 50
+        assert kwargs["min_reranker_score"] == pytest.approx(0.0)
+
+    def test_get_searcher_clamps_high_min_reranker_score_to_one(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 50,
+                 "min_reranker_score": 1.7,
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            server.get_searcher("/some/project")
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["min_reranker_score"] == pytest.approx(1.0)
+
+    def test_get_searcher_sanitizes_non_finite_min_reranker_score(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 50,
+                 "min_reranker_score": float("nan"),
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            server.get_searcher("/some/project")
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["min_reranker_score"] == pytest.approx(0.0)
+
+    def test_search_project_passes_min_reranker_score_from_config(self, server, tmp_path):
+        target = tmp_path / "target_project"
+        target.mkdir()
+        idx_root = tmp_path / "idx_root"
+        (idx_root / "index").mkdir(parents=True)
+
+        mock_index_manager = MagicMock()
+        mock_index_manager.get_index_size.return_value = 100
+        mock_searcher = MagicMock()
+        mock_searcher.search.return_value = []
+
+        with patch.object(server, "_project_storage_dir", return_value=idx_root), \
+             patch("mcp_server.code_search_server.CodeIndexManager", return_value=mock_index_manager), \
+             patch("search.searcher.IntelligentSearcher", return_value=mock_searcher) as searcher_cls, \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 30,
+                 "min_reranker_score": 0.6,
+             }), \
+             patch.object(server, "_open_transient_graph", return_value=None):
+            result = json.loads(
+                server.search_code("query", project_path=str(target), auto_reindex=False)
+            )
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["reranker_recall_k"] == 30
+        assert kwargs["min_reranker_score"] == pytest.approx(0.6)
+        assert "error" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +550,362 @@ class TestGetIndexStatus:
         assert "error" not in result
         assert "graph_statistics" not in result
         code_graph_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Idle offload parsing
+# ---------------------------------------------------------------------------
+
+class TestIdleOffloadParsing:
+    """_parse_idle_offload_minutes must return seconds with safe defaults."""
+
+    def test_default_is_fifteen_minutes_when_env_not_set(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("mcp_server.code_search_server.load_local_install_config", return_value={}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 900
+
+    def test_valid_minutes_converted_to_seconds(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "15"}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 900
+
+    def test_zero_means_disabled(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "0"}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 0
+
+    def test_negative_value_falls_back_to_default(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "-5"}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 900
+
+    def test_non_numeric_falls_back_to_default(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "abc"}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 900
+
+    def test_empty_string_falls_back_to_default(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": ""}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 900
+
+    def test_one_minute(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "1"}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 60
+
+    def test_install_config_overrides_default(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("mcp_server.code_search_server.load_local_install_config",
+                   return_value={"idle_offload_minutes": 20}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 1200
+
+    def test_env_var_overrides_install_config(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "5"}), \
+             patch("mcp_server.code_search_server.load_local_install_config",
+                   return_value={"idle_offload_minutes": 20}):
+            assert CodeSearchServer._parse_idle_offload_minutes() == 300
+
+
+# ---------------------------------------------------------------------------
+# Idle offload / restore lifecycle
+# ---------------------------------------------------------------------------
+
+class TestIdleOffloadRestore:
+    """The offload/restore state machine in search_code."""
+
+    def test_offload_fires_when_idle_threshold_exceeded(self):
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 10
+        server._last_query_monotonic = time.monotonic() - 20  # 20s ago
+
+        mock_embedder = MagicMock()
+        mock_reranker = MagicMock()
+
+        # Simulate that both are already cached (cache_info().currsize > 0)
+        mock_cache_info = MagicMock()
+        mock_cache_info.currsize = 1
+
+        with patch.object(type(server), "embedder") as emb_prop, \
+             patch.object(type(server), "reranker") as rnk_prop:
+            emb_prop.cache_info.return_value = mock_cache_info
+            emb_prop.return_value = mock_embedder
+            rnk_prop.cache_info.return_value = mock_cache_info
+            rnk_prop.return_value = mock_reranker
+            server._maybe_idle_offload()
+
+        assert server._models_offloaded is True
+        mock_embedder.offload_to_cpu.assert_called_once()
+        mock_reranker.offload_to_cpu.assert_called_once()
+
+    def test_no_offload_when_within_threshold(self):
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 60
+        server._last_query_monotonic = time.monotonic() - 10  # only 10s ago
+
+        server._maybe_idle_offload()
+        assert server._models_offloaded is False
+
+    def test_no_offload_when_disabled(self):
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 0
+        server._last_query_monotonic = time.monotonic() - 99999
+
+        server._maybe_idle_offload()
+        assert server._models_offloaded is False
+
+    def test_restore_fires_when_models_offloaded(self):
+        server = CodeSearchServer()
+        server._models_offloaded = True
+
+        mock_embedder = MagicMock()
+        mock_reranker = MagicMock()
+
+        mock_cache_info = MagicMock()
+        mock_cache_info.currsize = 1
+
+        with patch.object(type(server), "embedder") as emb_prop, \
+             patch.object(type(server), "reranker") as rnk_prop:
+            emb_prop.cache_info.return_value = mock_cache_info
+            emb_prop.return_value = mock_embedder
+            rnk_prop.cache_info.return_value = mock_cache_info
+            rnk_prop.return_value = mock_reranker
+            server._maybe_restore_models()
+
+        assert server._models_offloaded is False
+        mock_embedder.restore_to_device.assert_called_once()
+        mock_reranker.restore_to_device.assert_called_once()
+
+    def test_restore_noop_when_not_offloaded(self):
+        server = CodeSearchServer()
+        server._models_offloaded = False
+        # Should not raise or call anything
+        server._maybe_restore_models()
+
+    def test_search_code_updates_last_query_time(self, server):
+        """After a successful search, _last_query_monotonic must advance."""
+        mock_searcher = _mock_searcher_with_results([_fake_search_result()])
+        server._current_project = "/some/project"
+        old_time = server._last_query_monotonic
+
+        with patch.object(server, "get_searcher", return_value=mock_searcher), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "_maybe_idle_offload"), \
+             patch.object(server, "_maybe_restore_models"):
+            server.search_code("auth", auto_reindex=False)
+
+        assert server._last_query_monotonic >= old_time
+
+    def test_search_code_records_completion_time_not_start_time(self, server):
+        """Idle clock should advance at request completion, not request start."""
+        mock_searcher = _mock_searcher_with_results([_fake_search_result()])
+        server._current_project = "/some/project"
+
+        with patch.object(server, "get_searcher", return_value=mock_searcher), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "_maybe_idle_offload"), \
+             patch.object(server, "_maybe_restore_models"), \
+             patch("time.monotonic", side_effect=[100.0, 130.0]):
+            server.search_code("auth", auto_reindex=False)
+
+        assert server._last_query_monotonic == 130.0
+
+    def test_lru_cache_not_invalidated_by_offload_restore(self):
+        """Offload/restore must not clear or invalidate lru_cache on embedder/reranker.
+
+        model.to() is in-place — the cached instance stays valid.
+        """
+        server = CodeSearchServer()
+
+        # Simulate embedder() being cached by calling it
+        mock_embedder = MagicMock()
+        mock_reranker = MagicMock()
+
+        mock_cache_info = MagicMock()
+        mock_cache_info.currsize = 1
+
+        with patch.object(type(server), "embedder") as emb_prop, \
+             patch.object(type(server), "reranker") as rnk_prop:
+            emb_prop.cache_info.return_value = mock_cache_info
+            emb_prop.return_value = mock_embedder
+            rnk_prop.cache_info.return_value = mock_cache_info
+            rnk_prop.return_value = mock_reranker
+
+            # Offload
+            server._idle_offload_seconds = 1
+            server._last_query_monotonic = time.monotonic() - 10
+            server._maybe_idle_offload()
+
+            # Restore
+            server._maybe_restore_models()
+
+            # lru_cache should never have been cleared
+            emb_prop.cache_clear.assert_not_called()
+            rnk_prop.cache_clear.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Cold unload parsing
+# ---------------------------------------------------------------------------
+
+class TestColdUnloadParsing:
+    """_parse_idle_unload_minutes must return seconds with safe defaults."""
+
+    def test_default_is_thirty_minutes_when_env_not_set(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("mcp_server.code_search_server.load_local_install_config", return_value={}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 1800
+
+    def test_valid_minutes_converted_to_seconds(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_UNLOAD_MINUTES": "60"}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 3600
+
+    def test_zero_means_disabled(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_UNLOAD_MINUTES": "0"}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 0
+
+    def test_negative_value_falls_back_to_default(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_UNLOAD_MINUTES": "-10"}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 1800
+
+    def test_non_numeric_falls_back_to_default(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_UNLOAD_MINUTES": "xyz"}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 1800
+
+    def test_install_config_overrides_default(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("mcp_server.code_search_server.load_local_install_config",
+                   return_value={"idle_unload_minutes": 45}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 2700
+
+    def test_env_var_overrides_install_config(self):
+        with patch.dict(os.environ, {"CODE_SEARCH_IDLE_UNLOAD_MINUTES": "10"}), \
+             patch("mcp_server.code_search_server.load_local_install_config",
+                   return_value={"idle_unload_minutes": 45}):
+            assert CodeSearchServer._parse_idle_unload_minutes() == 600
+
+
+# ---------------------------------------------------------------------------
+# Cold unload lifecycle
+# ---------------------------------------------------------------------------
+
+class TestColdUnloadLifecycle:
+    """Tier 2: full model destruction after extended idle."""
+
+    def test_cold_unload_fires_when_threshold_exceeded(self):
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 60       # warm = 1 min
+        server._idle_unload_seconds = 300       # cold = 5 min
+        server._last_query_monotonic = time.monotonic() - 600  # 10 min ago
+
+        mock_embedder = MagicMock()
+        mock_reranker = MagicMock()
+
+        mock_cache_info = MagicMock()
+        mock_cache_info.currsize = 1
+
+        with patch.object(type(server), "embedder") as emb_prop, \
+             patch.object(type(server), "reranker") as rnk_prop:
+            emb_prop.cache_info.return_value = mock_cache_info
+            emb_prop.return_value = mock_embedder
+            rnk_prop.cache_info.return_value = mock_cache_info
+            rnk_prop.return_value = mock_reranker
+            server._maybe_cold_unload()
+
+        assert server._models_unloaded is True
+        assert server._models_offloaded is False
+        mock_embedder.cleanup.assert_called_once()
+        mock_reranker.cleanup.assert_called_once()
+        # lru_cache SHOULD be cleared for cold unload
+        emb_prop.cache_clear.assert_called_once()
+        rnk_prop.cache_clear.assert_called_once()
+
+    def test_no_cold_unload_when_disabled(self):
+        server = CodeSearchServer()
+        server._idle_unload_seconds = 0
+        server._last_query_monotonic = time.monotonic() - 99999
+
+        server._maybe_cold_unload()
+        assert server._models_unloaded is False
+
+    def test_no_cold_unload_when_within_threshold(self):
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 60
+        server._idle_unload_seconds = 300
+        server._last_query_monotonic = time.monotonic() - 120  # only 2 min
+
+        server._maybe_cold_unload()
+        assert server._models_unloaded is False
+
+    def test_cold_unload_skipped_when_already_unloaded(self):
+        server = CodeSearchServer()
+        server._idle_unload_seconds = 300
+        server._last_query_monotonic = time.monotonic() - 600
+        server._models_unloaded = True
+
+        # Should be a no-op (no model access)
+        server._maybe_cold_unload()
+        assert server._models_unloaded is True
+
+    def test_cold_threshold_less_than_warm_is_silently_skipped(self):
+        """If cold < warm, cold unload should not fire to prevent confusion."""
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 300   # warm = 5 min
+        server._idle_unload_seconds = 60     # cold = 1 min (misconfigured)
+        server._last_query_monotonic = time.monotonic() - 600
+
+        server._maybe_cold_unload()
+        assert server._models_unloaded is False
+
+    def test_restore_resets_unloaded_flag(self):
+        """After cold unload, _maybe_restore_models resets the flag for lazy re-init."""
+        server = CodeSearchServer()
+        server._models_unloaded = True
+
+        server._maybe_restore_models()
+
+        assert server._models_unloaded is False
+        # No restore_to_device calls — lazy init handles cold start
+
+    def test_warm_offload_skipped_when_models_unloaded(self):
+        """Tier 1 offload must not fire if tier 2 already unloaded."""
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 60
+        server._models_unloaded = True
+        server._last_query_monotonic = time.monotonic() - 600
+
+        server._maybe_idle_offload()
+        assert server._models_offloaded is False
+
+    def test_cold_unload_with_warm_offload_disabled(self):
+        """Cold unload should work even when warm offload is disabled (0)."""
+        server = CodeSearchServer()
+        server._idle_offload_seconds = 0      # warm disabled
+        server._idle_unload_seconds = 300     # cold = 5 min
+        server._last_query_monotonic = time.monotonic() - 600
+
+        mock_embedder = MagicMock()
+
+        mock_cache_info = MagicMock()
+        mock_cache_info.currsize = 1
+        mock_empty_cache = MagicMock()
+        mock_empty_cache.currsize = 0
+
+        with patch.object(type(server), "embedder") as emb_prop, \
+             patch.object(type(server), "reranker") as rnk_prop:
+            emb_prop.cache_info.return_value = mock_cache_info
+            emb_prop.return_value = mock_embedder
+            rnk_prop.cache_info.return_value = mock_empty_cache
+            server._maybe_cold_unload()
+
+        assert server._models_unloaded is True
+        mock_embedder.cleanup.assert_called_once()
+
+    def test_full_search_cycle_after_cold_unload(self, server):
+        """After cold unload, search_code should work via lazy re-initialization."""
+        mock_searcher = _mock_searcher_with_results([_fake_search_result()])
+        server._current_project = "/some/project"
+        server._models_unloaded = True
+
+        with patch.object(server, "get_searcher", return_value=mock_searcher), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "_maybe_cold_unload"), \
+             patch.object(server, "_maybe_idle_offload"):
+            result = json.loads(server.search_code("auth", auto_reindex=False))
+
+        assert "error" not in result
+        assert server._models_unloaded is False

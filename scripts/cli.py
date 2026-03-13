@@ -44,6 +44,7 @@ try:
         save_local_install_config,
         load_reranker_config,
         save_reranker_config,
+        save_idle_config,
         detect_gpu_index_url,
     )
 except ImportError:
@@ -56,6 +57,7 @@ except ImportError:
         save_local_install_config,
         load_reranker_config,
         save_reranker_config,
+        save_idle_config,
         detect_gpu_index_url,
     )
 
@@ -156,24 +158,42 @@ def get_platform_label() -> str:
     return {"Windows": "Windows", "Darwin": "macOS", "Linux": "Linux"}.get(system, system)
 
 
+def _gpu_extra_flag() -> str:
+    """Return ``--extra <name> `` if a GPU extra is configured, else ``""``."""
+    try:
+        config = load_local_install_config()
+        extra = config.get("gpu", {}).get("extra", "")
+        if extra:
+            return f"--extra {extra} "
+    except Exception:
+        pass
+    return ""
+
+
 def _cmd_prefix() -> str:
     """CLI command prefix appropriate for install mode."""
     if is_installed_package() and shutil.which("agent-context-local"):
         return "agent-context-local"
     install_dir = get_default_install_dir()
+    extra_flag = _gpu_extra_flag()
     if is_windows():
-        return f'uv run --directory "{install_dir}" python scripts/cli.py'
-    return f"uv run --directory {install_dir} python scripts/cli.py"
+        return f'uv run {extra_flag}--directory "{install_dir}" python scripts/cli.py'
+    return f"uv run {extra_flag}--directory {install_dir} python scripts/cli.py"
 
 
 def _mcp_server_cmd() -> str:
-    """MCP server command appropriate for install mode."""
+    """MCP server command appropriate for install mode.
+
+    Reads ``install_config.json`` to include ``--extra`` when a GPU
+    extra is configured, so ``uv run`` resolves GPU PyTorch automatically.
+    """
     if is_installed_package() and shutil.which("agent-context-local-mcp"):
         return "agent-context-local-mcp"
     install_dir = get_default_install_dir()
+    extra_flag = _gpu_extra_flag()
     if is_windows():
-        return f'uv run --directory "{install_dir}" python mcp_server/server.py'
-    return f"uv run --directory {install_dir} python mcp_server/server.py"
+        return f'uv run {extra_flag}--directory "{install_dir}" python mcp_server/server.py'
+    return f"uv run {extra_flag}--directory {install_dir} python mcp_server/server.py"
 
 
 def get_default_install_dir() -> Path:
@@ -322,7 +342,8 @@ def cmd_help() -> None:
         ("models active", "Show currently configured models"),
         ("models install", "Download a model by short name"),
         ("config model", "Switch the active embedding model"),
-        ("config reranker", "Toggle reranker on/off (or set model)"),
+        ("config reranker", "Toggle reranker, set model, or min-score"),
+        ("config idle", "Set idle offload/unload thresholds (minutes)"),
     ]
     for name, desc in cmds:
         print(f"  {cyan(name):<20s} {desc}")
@@ -1126,7 +1147,7 @@ def cmd_gpu_setup() -> None:
         if sys.platform == "win32":
             print(f'    claude mcp add code-search --scope user -- uv run --directory "{mcp_dir}" python mcp_server/server.py')
         else:
-            print(f"    claude mcp add code-search --scope user -- uv run --directory '{mcp_dir}' python mcp_server/server.py")
+            print(f"    claude mcp add code-search --scope user -- uv run --directory {mcp_dir} python mcp_server/server.py")
         print()
         return
 
@@ -1221,43 +1242,51 @@ def cmd_gpu_setup() -> None:
     except Exception:
         pass  # Non-critical
 
-    # Step 5: Print MCP registration command with --extra
+    # Step 5: Auto-register MCP with --extra flag
     mcp_dir = str(project_dir)
     print(f"\n  {green('✓')} GPU-accelerated PyTorch installed successfully.")
     print(f"  Use --extra {extra_name} in uv run commands for GPU torch.\n")
 
-    print(f"  Register the MCP server:")
-    print(f"    claude mcp remove code-search")
-    if sys.platform == "win32":
-        print(f'    claude mcp add code-search --scope user -- uv run --extra {extra_name} --directory "{mcp_dir}" python mcp_server/server.py')
+    mcp_cmd_parts = ["uv", "run", "--extra", extra_name, "--directory", mcp_dir,
+                     "python", "mcp_server/server.py"]
+    if shutil.which("claude"):
+        print(f"  Auto-registering MCP server with Claude Code...")
+        subprocess.run(["claude", "mcp", "remove", "code-search", "--scope", "user"],
+                       capture_output=True)
+        reg = subprocess.run(
+            ["claude", "mcp", "add", "code-search", "--scope", "user", "--"] + mcp_cmd_parts,
+            capture_output=True,
+        )
+        if reg.returncode == 0:
+            print(f"  {green('✓')} MCP server registered. Verify with: claude mcp list\n")
+        else:
+            mcp_cmd_str = " ".join(mcp_cmd_parts)
+            print(f"  {yellow('!')} Auto-registration failed. Register manually:")
+            print(f"    claude mcp add code-search --scope user -- {mcp_cmd_str}\n")
     else:
-        print(f"    claude mcp add code-search --scope user -- uv run --extra {extra_name} --directory '{mcp_dir}' python mcp_server/server.py")
-    print()
+        mcp_cmd_str = " ".join(mcp_cmd_parts)
+        print(f"  Register the MCP server:")
+        print(f"    claude mcp remove code-search")
+        print(f"    claude mcp add code-search --scope user -- {mcp_cmd_str}")
+        print()
 
     _verify_torch_gpu()
 
 
 # Map PyTorch index URLs to pyproject.toml extra names.
-# Only indexes with torch>=2.10.0 wheels are included.  Older CUDA/ROCm
-# versions fall through to the uv pip install fallback in gpu-setup.
+# Only cu126, cu128, and rocm7.1 have torch>=2.10.0 wheels.
+# Older CUDA (cu118/cu121/cu124) and ROCm <7.1 fall through to the
+# uv pip install fallback in gpu-setup.
 _INDEX_URL_TO_EXTRA = {
     "https://download.pytorch.org/whl/cu126": "cu126",
     "https://download.pytorch.org/whl/cu128": "cu128",
+    "https://download.pytorch.org/whl/rocm7.1": "rocm",
 }
 
 
 def _index_url_to_extra(index_url: str) -> Optional[str]:
     """Map a PyTorch index URL to the corresponding pyproject.toml extra name."""
     return _INDEX_URL_TO_EXTRA.get(index_url)
-    if not uv_toml.exists():
-        return None
-    try:
-        import re
-        content = uv_toml.read_text(encoding="utf-8")
-        m = re.search(r'url\s*=\s*"([^"]+)"', content)
-        return m.group(1) if m else None
-    except Exception:
-        return None
 
 
 def _verify_torch_gpu() -> None:
@@ -1374,7 +1403,11 @@ def cmd_models_active() -> None:
         rr_name = reranker_cfg.get("model_name", "unknown")
         status = green("enabled") if enabled else yellow("disabled")
         recall_k = reranker_cfg.get("recall_k", 50)
-        print(f"  Reranker:   {rr_name} [{status}] (recall_k={recall_k})")
+        min_reranker_score = reranker_cfg.get("min_reranker_score", 0.0)
+        print(
+            f"  Reranker:   {rr_name} [{status}] "
+            f"(recall_k={recall_k}, min_score={min_reranker_score})"
+        )
     else:
         print(f"  Reranker:   {yellow('not configured')}")
 
@@ -1414,19 +1447,38 @@ def cmd_config() -> None:
     """Dispatch ``config <subcommand>``."""
     args = sys.argv[2:]
     if not args:
-        print(red("Usage: config model <short-name>  |  config reranker <on|off>  |  config reranker model <short-name>"))
+        print(
+            red(
+                "Usage: config model <short-name>  |  "
+                "config reranker <on|off>  |  "
+                "config reranker model <short-name>  |  "
+                "config reranker min-score <0.0-1.0>  |  "
+                "config idle <offload|unload> <minutes>"
+            )
+        )
         sys.exit(1)
 
     sub = args[0].lower()
     if sub == "reranker":
         if len(args) < 2:
-            print(red("Usage: config reranker <on|off>  OR  config reranker model <short-name>"))
+            print(
+                red(
+                    "Usage: config reranker <on|off>  OR  "
+                    "config reranker model <short-name>  OR  "
+                    "config reranker min-score <0.0-1.0>"
+                )
+            )
             sys.exit(1)
         if args[1].lower() == "model":
             if len(args) < 3:
                 print(red("Usage: config reranker model <short-name>"))
                 sys.exit(1)
             cmd_config_reranker_model(args[2])
+        elif args[1].lower() in ("min-score", "min_score", "threshold"):
+            if len(args) < 3:
+                print(red("Usage: config reranker min-score <0.0-1.0>"))
+                sys.exit(1)
+            cmd_config_reranker_min_score(args[2])
         else:
             cmd_config_reranker(args[1])
     elif sub == "model":
@@ -1434,6 +1486,16 @@ def cmd_config() -> None:
             print(red("Usage: config model <short-name>"))
             sys.exit(1)
         cmd_config_model(args[1])
+    elif sub == "idle":
+        if len(args) < 3:
+            print(
+                red(
+                    "Usage: config idle offload <minutes>  |  "
+                    "config idle unload <minutes>"
+                )
+            )
+            sys.exit(1)
+        cmd_config_idle(args[1], args[2])
     else:
         print(red(f"Unknown config subcommand: '{sub}'"))
         sys.exit(1)
@@ -1453,16 +1515,19 @@ def cmd_config_reranker(state: str) -> None:
         print(red(f"Invalid state: '{state}'. Use 'on' or 'off'."))
         sys.exit(1)
 
-    # Read existing reranker config to preserve model_name and recall_k
+    # Read existing reranker config to preserve model_name, recall_k, and
+    # min_reranker_score across enable/disable toggles.
     from reranking.reranker_catalog import DEFAULT_RERANKER_MODEL
     existing = load_reranker_config(storage_dir=storage)
     model_name = existing.get("model_name", DEFAULT_RERANKER_MODEL)
     recall_k = existing.get("recall_k", 50)
+    min_reranker_score = existing.get("min_reranker_score", 0.0)
 
     save_reranker_config(
         model_name=model_name,
         enabled=enabled,
         recall_k=recall_k,
+        min_reranker_score=min_reranker_score,
         storage_dir=storage,
     )
 
@@ -1526,15 +1591,96 @@ def cmd_config_reranker_model(short_name: str) -> None:
         print(f"Run '{cyan(_cmd_prefix())} models list' to see available reranker models.")
         sys.exit(1)
 
-    # Preserve enabled state and recall_k
+    # Preserve enabled state, recall_k, and min_reranker_score.
     existing = load_reranker_config(storage_dir=storage)
     enabled = existing.get("enabled", False)
     recall_k = existing.get("recall_k", 50)
+    min_reranker_score = existing.get("min_reranker_score", 0.0)
 
-    save_reranker_config(model_name=full_name, enabled=enabled, recall_k=recall_k, storage_dir=storage)
+    save_reranker_config(
+        model_name=full_name,
+        enabled=enabled,
+        recall_k=recall_k,
+        min_reranker_score=min_reranker_score,
+        storage_dir=storage,
+    )
     status = green("enabled") if enabled else yellow("disabled")
     print(f"Reranker model set to: {green(full_name)} [{status}]")
     print(f"Restart the MCP server for the change to take effect.")
+
+
+def cmd_config_reranker_min_score(raw_value: str) -> None:
+    """Set reranker min score threshold in install_config.json."""
+    from reranking.reranker_catalog import DEFAULT_RERANKER_MODEL
+
+    storage = _get_storage_dir_or_report("config reranker min-score")
+    if storage is None:
+        return
+
+    try:
+        min_reranker_score = float(raw_value)
+    except ValueError:
+        print(red(f"Invalid min-score: '{raw_value}'. Expected a number between 0.0 and 1.0."))
+        sys.exit(1)
+
+    if not 0.0 <= min_reranker_score <= 1.0:
+        print(red(f"Invalid min-score: {min_reranker_score}. Use a value between 0.0 and 1.0."))
+        sys.exit(1)
+
+    existing = load_reranker_config(storage_dir=storage)
+    model_name = existing.get("model_name", DEFAULT_RERANKER_MODEL)
+    enabled = existing.get("enabled", False)
+    recall_k = existing.get("recall_k", 50)
+
+    save_reranker_config(
+        model_name=model_name,
+        enabled=enabled,
+        recall_k=recall_k,
+        min_reranker_score=min_reranker_score,
+        storage_dir=storage,
+    )
+
+    status = green("enabled") if enabled else yellow("disabled")
+    print(
+        f"Reranker min-score set to: {green(str(min_reranker_score))} "
+        f"(model: {model_name}, {status}, recall_k={recall_k})"
+    )
+    print("Restart the MCP server for the change to take effect.")
+
+
+def cmd_config_idle(kind: str, raw_minutes: str) -> None:
+    """Set idle offload/unload thresholds in install_config.json."""
+    storage = _get_storage_dir_or_report("config idle")
+    if storage is None:
+        return
+
+    kind_lower = kind.lower()
+    if kind_lower not in ("offload", "unload"):
+        print(red(f"Unknown idle kind: '{kind}'. Use 'offload' or 'unload'."))
+        sys.exit(1)
+
+    try:
+        minutes = int(raw_minutes)
+    except ValueError:
+        print(red(f"Invalid minutes: '{raw_minutes}'. Expected a non-negative integer."))
+        sys.exit(1)
+
+    if minutes < 0:
+        print(red(f"Invalid minutes: {minutes}. Must be >= 0 (0 = disabled)."))
+        sys.exit(1)
+
+    if kind_lower == "offload":
+        save_idle_config(idle_offload_minutes=minutes, storage_dir=storage)
+        label = "warm CPU offload"
+    else:
+        save_idle_config(idle_unload_minutes=minutes, storage_dir=storage)
+        label = "cold full unload"
+
+    if minutes == 0:
+        print(f"Idle {label}: {yellow('disabled')}")
+    else:
+        print(f"Idle {label}: {green(str(minutes))} minute(s)")
+    print("Restart the MCP server for the change to take effect.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────
@@ -1568,6 +1714,7 @@ def _suggest_command(unknown: str) -> str:
         "setup_guide": "setup-guide",
         "model": "models",
         "reranker": "config reranker <on|off>",
+        "threshold": "config reranker min-score <0.0-1.0>",
         "install": "models install <short-name>",
         "list": "models list",
         "active": "models active",
@@ -1603,7 +1750,7 @@ def main() -> None:
         suggestion = _suggest_command(command)
         if suggestion:
             print(f"  Did you mean: {cyan(suggestion)}?")
-        print(f"Run '{cyan('python scripts/cli.py help')}' to see available commands.\n")
+        print(f"Run '{cyan(f'{_cmd_prefix()} help')}' to see available commands.\n")
         sys.exit(1)
 
     handler()

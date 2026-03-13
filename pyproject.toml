@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-context-local"
-version = "1.0.0"
-description = "Local semantic code search for AI coding assistants via MCP. Hybrid BM25 + vector search with tree-sitter AST chunking. 100% local — no API keys, no uploads."
+version = "0.9.0"
+description = "Local semantic code search for AI coding assistants. MCP server with hybrid keyword + vector search and tree-sitter AST chunking. No API keys, no uploads — runs entirely on your machine."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -82,6 +82,21 @@ dependencies = [
     "tree-sitter-svelte>=1.0.2",
     "torch>=2.10.0",
     "tree-sitter-typescript>=0.23.2",
+    # Tier 1 languages (Session B)
+    "tree-sitter-bash>=0.23.0",
+    "tree-sitter-html>=0.23.0",
+    "tree-sitter-css>=0.23.0",
+    # Tier 2 languages (Session D)
+    "tree-sitter-ruby>=0.23.0",
+    "tree-sitter-php>=0.23.0",
+    "tree-sitter-swift>=0.0.1",
+    "tree-sitter-sql>=0.3.0",
+    # Tier 3 languages (Session D)
+    "tree-sitter-hcl>=1.0.0",
+    "tree-sitter-scala>=0.23.0",
+    "tree-sitter-lua>=0.5.0",
+    "tree-sitter-elixir>=0.3.0",
+    "tree-sitter-haskell>=0.23.0",
 ]
 
 classifiers = [
@@ -110,6 +125,10 @@ test = [
 # Default (no extra): CPU torch from PyPI.
 cu126 = ["torch>=2.10.0"]
 cu128 = ["torch>=2.10.0"]
+rocm = [                                            # ROCm 7.1+ (Linux only)
+    "torch>=2.10.0; sys_platform == 'linux'",
+    "triton-rocm>=3.6.0; sys_platform == 'linux'",
+]
 
 [project.urls]
 Homepage = "https://github.com/tlines2016/agent-context-code"
@@ -136,6 +155,7 @@ conflicts = [
     [
         { extra = "cu126" },
         { extra = "cu128" },
+        { extra = "rocm" },
     ],
 ]
 
@@ -143,6 +163,10 @@ conflicts = [
 torch = [
     { index = "pytorch-cu126", extra = "cu126" },
     { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-rocm", extra = "rocm" },
+]
+triton-rocm = [
+    { index = "pytorch-rocm", extra = "rocm" },
 ]
 
 [[tool.uv.index]]
@@ -154,3 +178,9 @@ explicit = true
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.1"
+explicit = true
+

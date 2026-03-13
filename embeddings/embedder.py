@@ -1,5 +1,6 @@
 """Code embedding wrapper with install-time model selection."""
 
+import gc
 import logging
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, fields, replace
@@ -127,7 +128,8 @@ class CodeEmbedder:
             self._model = SentenceTransformerModel(
                 model_name=model_name,
                 cache_dir=cache_dir,
-                device=device
+                device=device,
+                trust_remote_code=self.model_config.trust_remote_code,
             )
         else:
             raise ValueError("Embedding model name must not be empty.")
@@ -293,6 +295,11 @@ class CodeEmbedder:
                     metadata=self._make_chunk_metadata(chunk),
                 ))
 
+            # Release GPU cache once per batch to reduce VRAM pressure
+            # during long indexing runs.  Backend-aware: only fires on
+            # CUDA or MPS where allocator caching is meaningful.
+            self._release_gpu_cache()
+
             if i + batch_size < len(chunks):
                 self._logger.info(f"Processed {i + batch_size}/{len(chunks)} chunks")
 
@@ -338,6 +345,51 @@ class CodeEmbedder:
             Dictionary with model information
         """
         return self._model.get_model_info()
+
+    def _release_gpu_cache(self) -> None:
+        """Run gc.collect() + backend-aware GPU cache release.
+
+        Called once per embedding batch — not per chunk — to keep overhead
+        under ~5-6 % while preventing VRAM accumulation during long runs.
+        Skipped entirely on CPU-only installs where gc.collect() per batch
+        would add measurable overhead for zero benefit.
+        """
+        import torch
+
+        if torch.cuda.is_available():
+            gc.collect()
+            torch.cuda.empty_cache()
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            gc.collect()
+            torch.mps.empty_cache()
+
+    def offload_to_cpu(self) -> None:
+        """Move the underlying model to CPU and release GPU cache.
+
+        Safe to call even when the model is not yet loaded (no-op).
+        """
+        import torch
+
+        if not getattr(self._model, "_model_loaded", False):
+            return
+        try:
+            self._model.model.to("cpu")
+            self._release_gpu_cache()
+        except Exception as exc:
+            self._logger.debug("offload_to_cpu skipped: %s", exc)
+
+    def restore_to_device(self) -> None:
+        """Move the underlying model back to its configured runtime device.
+
+        Safe to call even when the model is not yet loaded (no-op).
+        ``model.to(device)`` is in-place — no lru_cache invalidation needed.
+        """
+        if not getattr(self._model, "_model_loaded", False):
+            return
+        try:
+            self._model.model.to(self._model._device)
+        except Exception as exc:
+            self._logger.debug("restore_to_device skipped: %s", exc)
 
     def cleanup(self):
         """Clean up model resources."""

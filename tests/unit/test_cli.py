@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from scripts.cli import (
     _get_storage_dir_or_report,
+    cmd_config,
+    cmd_config_reranker_min_score,
     cmd_doctor,
     cmd_help,
     cmd_paths,
@@ -186,3 +188,54 @@ class TestCLIPlatformHelpers:
     def test_commands_dict_contains_required_entries(self):
         required = {"help", "--help", "-h", "doctor", "version", "--version", "status", "paths", "setup-guide"}
         assert required.issubset(COMMANDS.keys())
+
+
+class TestRerankerMinScoreConfig:
+    def test_config_reranker_min_score_persists_value(self, monkeypatch):
+        storage = Path("/tmp/test-storage")
+        captured = {}
+
+        monkeypatch.setattr("scripts.cli._get_storage_dir_or_report", lambda _cmd: storage)
+        monkeypatch.setattr(
+            "scripts.cli.load_reranker_config",
+            lambda storage_dir=None: {
+                "model_name": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                "enabled": True,
+                "recall_k": 60,
+                "min_reranker_score": 0.0,
+            },
+        )
+
+        def _save(**kwargs):
+            captured.update(kwargs)
+            return Path("/tmp/install_config.json")
+
+        monkeypatch.setattr("scripts.cli.save_reranker_config", _save)
+        cmd_config_reranker_min_score("0.35")
+
+        assert captured["model_name"] == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        assert captured["enabled"] is True
+        assert captured["recall_k"] == 60
+        assert captured["min_reranker_score"] == pytest.approx(0.35)
+        assert captured["storage_dir"] == storage
+
+    def test_config_reranker_min_score_rejects_out_of_range(self, monkeypatch):
+        monkeypatch.setattr("scripts.cli._get_storage_dir_or_report", lambda _cmd: Path("/tmp/x"))
+        with pytest.raises(SystemExit):
+            cmd_config_reranker_min_score("1.5")
+
+    def test_config_reranker_min_score_rejects_non_numeric(self, monkeypatch):
+        monkeypatch.setattr("scripts.cli._get_storage_dir_or_report", lambda _cmd: Path("/tmp/x"))
+        with pytest.raises(SystemExit):
+            cmd_config_reranker_min_score("not-a-number")
+
+    def test_config_dispatch_routes_min_score_subcommand(self, monkeypatch):
+        monkeypatch.setattr("scripts.cli.sys.argv", ["cli.py", "config", "reranker", "min-score", "0.2"])
+        captured = {"value": None}
+
+        def _capture(raw_value: str):
+            captured["value"] = raw_value
+
+        monkeypatch.setattr("scripts.cli.cmd_config_reranker_min_score", _capture)
+        cmd_config()
+        assert captured["value"] == "0.2"

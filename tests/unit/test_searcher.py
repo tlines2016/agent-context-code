@@ -310,6 +310,37 @@ class TestRerankerIntegration:
         s = IntelligentSearcher(im, embedder, reranker=mock_reranker, reranker_recall_k=20)
         s.search("query", k=1)
         mock_reranker.rerank.assert_called_once()
+        _, kwargs = mock_reranker.rerank.call_args
+        assert kwargs["top_k"] == 1
+        assert kwargs["min_score"] == pytest.approx(0.0)
+
+    def test_custom_min_reranker_score_is_forwarded(self):
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.8, self._full_meta("c0")),
+        ]
+        im.get_similar_chunks.return_value = []
+        im.get_file_chunk_count.return_value = 0
+
+        embedder = _make_mock_embedder()
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            ("c0", 0.95, {
+                **self._full_meta("c0"),
+                "reranked": True,
+                "vector_similarity": 0.8,
+            }),
+        ]
+
+        s = IntelligentSearcher(
+            im,
+            embedder,
+            reranker=mock_reranker,
+            min_reranker_score=0.75,
+        )
+        s.search("query", k=2)
+        _, kwargs = mock_reranker.rerank.call_args
+        assert kwargs["min_score"] == pytest.approx(0.75)
 
     def test_fallback_to_vector_scores_when_reranker_raises(self):
         im = _make_mock_index_manager()
@@ -348,6 +379,37 @@ class TestRerankerIntegration:
         assert len(results) == 1
         assert results[0].similarity_score == pytest.approx(0.8)
 
+    def test_reranker_threshold_can_return_fewer_than_k_results(self):
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.91, self._full_meta("c0")),
+            ("c1", 0.74, self._full_meta("c1")),
+            ("c2", 0.53, self._full_meta("c2")),
+            ("c3", 0.31, self._full_meta("c3")),
+        ]
+        im.get_similar_chunks.return_value = []
+        im.get_file_chunk_count.return_value = 0
+
+        embedder = _make_mock_embedder()
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            ("c1", 0.86, {
+                **self._full_meta("c1"),
+                "reranked": True,
+                "vector_similarity": 0.74,
+            }),
+        ]
+
+        s = IntelligentSearcher(
+            im,
+            embedder,
+            reranker=mock_reranker,
+            min_reranker_score=0.8,
+        )
+        results = s.search("query", k=3, context_depth=0)
+        assert len(results) == 1
+        assert results[0].chunk_id == "c1"
+
 
 # ---------------------------------------------------------------------------
 # search_by_chunk_type / search_by_file_pattern — filter pass-through
@@ -371,3 +433,239 @@ class TestFilteredSearch:
 
     def test_search_by_chunk_type_method_exists(self, searcher):
         assert hasattr(searcher, "search_by_chunk_type")
+
+
+# ---------------------------------------------------------------------------
+# _preprocess_bm25_query — CamelCase / snake_case expansion
+# ---------------------------------------------------------------------------
+
+class TestPreprocessBm25Query:
+    def test_camel_case_expansion(self, searcher):
+        result = searcher._preprocess_bm25_query("getUserById")
+        assert "getUserById" in result
+        assert "get" in result
+        assert "User" in result
+        assert "By" in result
+        assert "Id" in result
+
+    def test_snake_case_expansion(self, searcher):
+        result = searcher._preprocess_bm25_query("get_user_by_id")
+        assert "get_user_by_id" in result
+        assert "get" in result
+        assert "user" in result
+        assert "by" in result
+        assert "id" in result
+
+    def test_kebab_case_expansion(self, searcher):
+        result = searcher._preprocess_bm25_query("get-user-by-id")
+        assert "get-user-by-id" in result
+        assert "get" in result
+        assert "user" in result
+
+    def test_plain_query_passthrough(self, searcher):
+        result = searcher._preprocess_bm25_query("simple query")
+        assert result == "simple query"
+
+    def test_empty_query(self, searcher):
+        assert searcher._preprocess_bm25_query("") == ""
+
+    def test_whitespace_only_query(self, searcher):
+        assert searcher._preprocess_bm25_query("   ") == "   "
+
+    def test_dedup_tokens(self, searcher):
+        # "get getUserById" — "get" appears in both original and expansion
+        result = searcher._preprocess_bm25_query("get getUserById")
+        tokens = result.split()
+        # "get" should appear only once
+        assert tokens.count("get") == 1
+
+    def test_original_as_prefix(self, searcher):
+        result = searcher._preprocess_bm25_query("getUserById")
+        # Original token must come first
+        assert result.startswith("getUserById")
+
+    def test_multi_token_mixed(self, searcher):
+        result = searcher._preprocess_bm25_query("find getUserById in_module")
+        assert "find" in result
+        assert "getUserById" in result
+        assert "in_module" in result
+        assert "User" in result
+        assert "module" in result
+
+    def test_acronym_word_boundary(self, searcher):
+        """Consecutive uppercase (acronyms) split at acronym-word boundary."""
+        result = searcher._preprocess_bm25_query("HTMLElement")
+        assert "HTML" in result
+        assert "Element" in result
+
+    def test_acronym_in_middle(self, searcher):
+        result = searcher._preprocess_bm25_query("getURLParser")
+        assert "get" in result
+        assert "URL" in result
+        assert "Parser" in result
+
+    def test_all_caps_passthrough(self, searcher):
+        """All-caps tokens like HTTP have no split boundary — pass through."""
+        result = searcher._preprocess_bm25_query("HTTP")
+        assert result == "HTTP"
+
+
+# ---------------------------------------------------------------------------
+# BM25 query expansion integration — verify expanded query flows to search
+# ---------------------------------------------------------------------------
+
+class TestBm25QueryExpansion:
+    def test_expanded_query_passed_to_index_manager(self):
+        """Verify _preprocess_bm25_query output is passed as query_text."""
+        im = _make_mock_index_manager()
+        im.search.return_value = []
+        embedder = _make_mock_embedder()
+
+        s = IntelligentSearcher(im, embedder)
+        s.search("getUserById", k=1, context_depth=0)
+
+        call_args = im.search.call_args
+        assert call_args is not None
+        query_text = call_args.kwargs.get("query_text", call_args.args[3] if len(call_args.args) > 3 else None)
+        # Should contain expanded tokens, not just the raw query
+        assert "get" in query_text or "User" in query_text
+
+    def test_vector_embedding_uses_original_query(self):
+        """Verify the embedding is generated from the original query, not the expanded one."""
+        im = _make_mock_index_manager()
+        im.search.return_value = []
+        embedder = _make_mock_embedder()
+
+        s = IntelligentSearcher(im, embedder)
+        s.search("getUserById", k=1, context_depth=0)
+
+        # embed_query should receive the stripped original, not BM25-expanded
+        embedder.embed_query.assert_called_once_with("getUserById")
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — Duplicate chunk_id deduplication
+# ---------------------------------------------------------------------------
+
+class TestDeduplication:
+    def _full_meta(self, chunk_id: str = "c0", **overrides) -> dict:
+        base = {
+            "content_preview": "def foo(): pass",
+            "file_path": "/proj/foo.py",
+            "relative_path": "foo.py",
+            "chunk_type": "function",
+            "name": "foo",
+            "parent_name": "",
+            "start_line": 1,
+            "end_line": 5,
+            "docstring": "",
+            "tags": [],
+            "folder_structure": ["proj"],
+        }
+        base.update(overrides)
+        return base
+
+    def test_duplicate_chunk_ids_are_removed(self):
+        """When index_manager returns duplicate chunk_ids, only the first survives."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.9, self._full_meta("c0")),
+            ("c0", 0.85, self._full_meta("c0")),  # duplicate
+            ("c1", 0.7, self._full_meta("c1", name="bar", relative_path="bar.py")),
+        ]
+        embedder = _make_mock_embedder()
+        s = IntelligentSearcher(im, embedder, reranker=None)
+        results = s.search("query", k=5, context_depth=0)
+        chunk_ids = [r.chunk_id for r in results]
+        assert chunk_ids.count("c0") == 1
+        assert "c1" in chunk_ids
+
+    def test_no_duplicates_passes_through_unchanged(self):
+        """When there are no duplicates, all results are returned."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.9, self._full_meta("c0")),
+            ("c1", 0.7, self._full_meta("c1", name="bar")),
+            ("c2", 0.5, self._full_meta("c2", name="baz")),
+        ]
+        embedder = _make_mock_embedder()
+        s = IntelligentSearcher(im, embedder, reranker=None)
+        results = s.search("query", k=5, context_depth=0)
+        assert len(results) == 3
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — Reranker metadata threading into SearchResult.context_info
+# ---------------------------------------------------------------------------
+
+class TestRerankerMetadataThreading:
+    def _full_meta(self, chunk_id: str = "c0", **overrides) -> dict:
+        base = {
+            "content_preview": "def foo(): pass",
+            "file_path": "/proj/foo.py",
+            "relative_path": "foo.py",
+            "chunk_type": "function",
+            "name": "foo",
+            "parent_name": "",
+            "start_line": 1,
+            "end_line": 5,
+            "docstring": "",
+            "tags": [],
+            "folder_structure": ["proj"],
+        }
+        base.update(overrides)
+        return base
+
+    def test_reranked_flag_in_context_info(self):
+        """When reranker runs, SearchResult.context_info contains 'reranked': True."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.8, self._full_meta("c0")),
+        ]
+        embedder = _make_mock_embedder()
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            ("c0", 0.95, {
+                **self._full_meta("c0"),
+                "reranked": True,
+                "vector_similarity": 0.8,
+            }),
+        ]
+        s = IntelligentSearcher(im, embedder, reranker=mock_reranker)
+        results = s.search("query", k=1, context_depth=0)
+        assert results[0].context_info.get("reranked") is True
+        assert results[0].context_info["vector_similarity"] == pytest.approx(0.8)
+
+    def test_no_reranker_no_reranked_flag(self):
+        """Without a reranker, context_info should not contain 'reranked'."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.8, self._full_meta("c0")),
+        ]
+        embedder = _make_mock_embedder()
+        s = IntelligentSearcher(im, embedder, reranker=None)
+        results = s.search("query", k=1, context_depth=0)
+        assert "reranked" not in results[0].context_info
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — _format_result vector_score surfacing
+# ---------------------------------------------------------------------------
+
+class TestFormatResultVectorScore:
+    def test_vector_score_present_when_reranked(self):
+        """_format_result should include vector_score when reranked."""
+        from mcp_server.code_search_server import CodeSearchServer
+        result = _make_search_result("c0", similarity=0.95)
+        result.context_info = {"reranked": True, "vector_similarity": 0.8}
+        formatted = CodeSearchServer._format_result(result)
+        assert "vector_score" in formatted
+        assert formatted["vector_score"] == 0.8
+
+    def test_vector_score_absent_when_not_reranked(self):
+        """_format_result should NOT include vector_score when not reranked."""
+        from mcp_server.code_search_server import CodeSearchServer
+        result = _make_search_result("c0", similarity=0.9)
+        result.context_info = {}
+        formatted = CodeSearchServer._format_result(result)
+        assert "vector_score" not in formatted

@@ -15,6 +15,18 @@ from chunking.languages.markdown_chunker import MarkdownChunker
 from chunking.languages.c_chunker import CChunker
 from chunking.languages.cpp_chunker import CppChunker
 from chunking.languages.csharp_chunker import CSharpChunker
+from chunking.languages.bash_chunker import BashChunker
+from chunking.languages.html_chunker import HtmlChunker
+from chunking.languages.css_chunker import CssChunker
+from chunking.languages.ruby_chunker import RubyChunker
+from chunking.languages.php_chunker import PhpChunker
+from chunking.languages.swift_chunker import SwiftChunker
+from chunking.languages.sql_chunker import SqlChunker
+from chunking.languages.hcl_chunker import HclChunker
+from chunking.languages.scala_chunker import ScalaChunker
+from chunking.languages.lua_chunker import LuaChunker
+from chunking.languages.elixir_chunker import ElixirChunker
+from chunking.languages.haskell_chunker import HaskellChunker
 
 # Cached factory function for C++ chunker (shared across multiple extensions)
 @lru_cache(maxsize=1)
@@ -24,6 +36,7 @@ def _get_cpp_chunker() -> CppChunker:
 
 # Map file extensions to chunker classes and language names
 LANGUAGE_MAP = {
+    # --- Original languages ---
     '.py': ('python', PythonChunker),
     '.js': ('javascript', JavaScriptChunker),
     '.jsx': ('jsx', JSXChunker),
@@ -42,4 +55,26 @@ LANGUAGE_MAP = {
     '.cxx': ('cpp', _get_cpp_chunker),
     '.c++': ('cpp', _get_cpp_chunker),
     '.cs': ('csharp', CSharpChunker),
+    # --- Tier 1: Shell, HTML, CSS ---
+    '.sh': ('bash', BashChunker),
+    '.bash': ('bash', BashChunker),
+    '.zsh': ('bash', BashChunker),
+    '.html': ('html', HtmlChunker),
+    '.htm': ('html', HtmlChunker),
+    '.css': ('css', CssChunker),
+    # --- Tier 2: Ruby, PHP, Swift, SQL ---
+    '.rb': ('ruby', RubyChunker),
+    '.php': ('php', PhpChunker),
+    '.swift': ('swift', SwiftChunker),
+    '.sql': ('sql', SqlChunker),
+    # --- Tier 3: HCL, Scala, Lua, Elixir, Haskell ---
+    '.tf': ('hcl', HclChunker),
+    '.tfvars': ('hcl', HclChunker),
+    '.hcl': ('hcl', HclChunker),
+    '.scala': ('scala', ScalaChunker),
+    '.sc': ('scala', ScalaChunker),
+    '.lua': ('lua', LuaChunker),
+    '.ex': ('elixir', ElixirChunker),
+    '.exs': ('elixir', ElixirChunker),
+    '.hs': ('haskell', HaskellChunker),
 }

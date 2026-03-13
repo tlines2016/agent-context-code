@@ -303,14 +303,16 @@ def detect_gpu_index_url() -> tuple[str, str | None, str | None, str | None]:
             parts = rocm_ver.split(".")
             rocm_major = int(parts[0])
             rocm_minor = int(parts[1]) if len(parts) > 1 else 0
-            if rocm_major >= 7 or (rocm_major == 6 and rocm_minor >= 2):
+            if rocm_major >= 7 and rocm_minor >= 1:
+                url = "https://download.pytorch.org/whl/rocm7.1"
+            elif rocm_major >= 7 or (rocm_major == 6 and rocm_minor >= 2):
                 url = "https://download.pytorch.org/whl/rocm6.2.4"
             elif rocm_major == 6:
                 url = "https://download.pytorch.org/whl/rocm6.1"
             # ROCm < 6.0 → no compatible PyTorch wheels, url stays None
         else:
             # ROCm tools found but version unknown — try latest stable
-            url = "https://download.pytorch.org/whl/rocm6.2.4"
+            url = "https://download.pytorch.org/whl/rocm7.1"
         return ("amd", rocm_ver, gpu_name, url)
 
     return ("cpu", None, None, None)
@@ -375,7 +377,10 @@ def load_reranker_config(storage_dir: Optional[Path] = None) -> Dict[str, Any]:
     cannot be read.  This mirrors the load_local_install_config pattern.
     """
     config = load_local_install_config(storage_dir)
-    return config.get("reranker", {})
+    reranker_config = config.get("reranker", {})
+    # Older or manually edited configs may contain a non-dict "reranker"
+    # value; normalize to {} so downstream .get() callers remain safe.
+    return reranker_config if isinstance(reranker_config, dict) else {}
 
 
 def save_reranker_config(
@@ -383,6 +388,7 @@ def save_reranker_config(
     enabled: bool = False,
     recall_k: int = 50,
     storage_dir: Optional[Path] = None,
+    min_reranker_score: float = 0.0,
 ) -> Path:
     """Persist reranker configuration into install_config.json.
 
@@ -399,7 +405,51 @@ def save_reranker_config(
         "model_name": model_name,
         "enabled": enabled,
         "recall_k": recall_k,
+        "min_reranker_score": min_reranker_score,
     }
+
+    config_path = get_install_config_path(target_storage_dir)
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
+def save_idle_config(
+    idle_offload_minutes: Optional[int] = None,
+    idle_unload_minutes: Optional[int] = None,
+    storage_dir: Optional[Path] = None,
+) -> Path:
+    """Persist idle memory-management thresholds into install_config.json.
+
+    Only keys with non-None values are written; existing keys not supplied
+    are preserved.  Returns the path to the written config file.
+    """
+    target_storage_dir = storage_dir or get_storage_dir()
+    target_storage_dir.mkdir(parents=True, exist_ok=True)
+
+    config = load_local_install_config(target_storage_dir)
+
+    def _normalize_idle_minutes(value: Optional[int], key_name: str) -> Optional[int]:
+        """Validate idle threshold values before writing config.
+
+        Accepts non-negative integer-like values. Returns None unchanged so
+        callers can perform partial updates.
+        """
+        if value is None:
+            return None
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key_name} must be an integer >= 0, got {value!r}") from exc
+        if normalized < 0:
+            raise ValueError(f"{key_name} must be >= 0, got {normalized}")
+        return normalized
+
+    normalized_offload = _normalize_idle_minutes(idle_offload_minutes, "idle_offload_minutes")
+    normalized_unload = _normalize_idle_minutes(idle_unload_minutes, "idle_unload_minutes")
+    if normalized_offload is not None:
+        config["idle_offload_minutes"] = normalized_offload
+    if normalized_unload is not None:
+        config["idle_unload_minutes"] = normalized_unload
 
     config_path = get_install_config_path(target_storage_dir)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

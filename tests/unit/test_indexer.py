@@ -290,3 +290,69 @@ class TestGetStats:
     def test_get_stats_total_chunks_matches_size(self, populated_index):
         stats = populated_index.get_stats()
         assert stats.get("total_chunks", -1) == populated_index.get_index_size()
+
+
+# ---------------------------------------------------------------------------
+# prefilter flag on .where() calls
+# ---------------------------------------------------------------------------
+
+class TestPrefilterFlag:
+    """Verify _vector_search and _hybrid_search pass prefilter=True."""
+
+    def test_vector_search_passes_prefilter(self, populated_index):
+        """_vector_search passes prefilter=True when a where_clause is set."""
+        mock_builder = MagicMock()
+        mock_builder.metric.return_value = mock_builder
+        mock_builder.refine_factor.return_value = mock_builder
+        mock_builder.where.return_value = mock_builder
+        mock_builder.limit.return_value = mock_builder
+        mock_builder.to_pandas.return_value = MagicMock(iterrows=lambda: iter([]))
+
+        with patch.object(populated_index, "_table") as mock_table:
+            mock_table.search.return_value = mock_builder
+            populated_index._vector_search([0.1, 0.2, 0.3, 0.4], 10, "chunk_type = 'function'")
+
+        mock_builder.where.assert_called_once_with("chunk_type = 'function'", prefilter=True)
+
+    def test_hybrid_search_passes_prefilter(self, populated_index):
+        """_hybrid_search passes prefilter=True when a where_clause is set."""
+        mock_builder = MagicMock()
+        mock_builder.vector.return_value = mock_builder
+        mock_builder.text.return_value = mock_builder
+        mock_builder.where.return_value = mock_builder
+        mock_builder.limit.return_value = mock_builder
+        mock_builder.to_pandas.return_value = MagicMock(iterrows=lambda: iter([]))
+
+        with patch.object(populated_index, "_table") as mock_table:
+            mock_table.search.return_value = mock_builder
+            populated_index._hybrid_search([0.1, 0.2, 0.3, 0.4], "test query", 10, "chunk_type = 'function'")
+
+        mock_builder.where.assert_called_once_with("chunk_type = 'function'", prefilter=True)
+
+    def test_vector_search_no_where_without_clause(self, populated_index):
+        """_vector_search does not call .where() when clause is None."""
+        mock_builder = MagicMock()
+        mock_builder.metric.return_value = mock_builder
+        mock_builder.refine_factor.return_value = mock_builder
+        mock_builder.limit.return_value = mock_builder
+        mock_builder.to_pandas.return_value = MagicMock(iterrows=lambda: iter([]))
+
+        with patch.object(populated_index, "_table") as mock_table:
+            mock_table.search.return_value = mock_builder
+            populated_index._vector_search([0.1, 0.2, 0.3, 0.4], 10, None)
+
+        mock_builder.where.assert_not_called()
+
+    def test_hybrid_search_no_where_without_clause(self, populated_index):
+        """_hybrid_search does not call .where() when clause is None."""
+        mock_builder = MagicMock()
+        mock_builder.vector.return_value = mock_builder
+        mock_builder.text.return_value = mock_builder
+        mock_builder.limit.return_value = mock_builder
+        mock_builder.to_pandas.return_value = MagicMock(iterrows=lambda: iter([]))
+
+        with patch.object(populated_index, "_table") as mock_table:
+            mock_table.search.return_value = mock_builder
+            populated_index._hybrid_search([0.1, 0.2, 0.3, 0.4], "test query", 10, None)
+
+        mock_builder.where.assert_not_called()

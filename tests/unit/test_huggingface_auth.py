@@ -68,7 +68,7 @@ def test_code_embedder_accepts_other_embeddinggemma_variants(monkeypatch, tmp_pa
     captured = {}
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             captured["model_name"] = model_name
             captured["cache_dir"] = cache_dir
             captured["device"] = device
@@ -96,7 +96,7 @@ def test_code_embedder_accepts_generic_sentence_transformer_models(monkeypatch, 
     captured = {}
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             captured["model_name"] = model_name
             captured["cache_dir"] = cache_dir
             captured["device"] = device
@@ -124,7 +124,7 @@ def test_code_embedder_reads_model_from_local_install_config(monkeypatch, tmp_pa
     captured = {}
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             captured["model_name"] = model_name
             captured["cache_dir"] = cache_dir
             captured["device"] = device
@@ -197,7 +197,7 @@ def test_code_embedder_uses_local_prefix_overrides_for_generic_models(monkeypatc
     calls = []
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             self.model_name = model_name
             self.model = object()
 
@@ -290,7 +290,7 @@ def test_create_embedding_content_adds_parent_context_for_member_types(monkeypat
     """All _MEMBER_CHUNK_TYPES with a parent_name should have a parent context prefix in their embedding."""
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             self.model = object()
 
         def encode(self, texts, **kwargs):
@@ -334,7 +334,7 @@ def test_create_embedding_content_no_parent_context_for_top_level_functions(monk
     """Top-level functions without a parent should not have an injected parent context prefix."""
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             self.model = object()
 
         def encode(self, texts, **kwargs):
@@ -370,7 +370,7 @@ def test_make_chunk_id_includes_name_when_present(monkeypatch, tmp_path):
     """_make_chunk_id should append the chunk name when available."""
 
     class FakeSentenceTransformerModel:
-        def __init__(self, model_name, cache_dir=None, device="auto"):
+        def __init__(self, model_name, cache_dir=None, device="auto", **kwargs):
             self.model = object()
 
         def encode(self, texts, **kwargs):

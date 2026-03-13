@@ -263,6 +263,32 @@ class CodeIndexManager:
 
         Safe to call repeatedly — LanceDB silently skips creation when the
         index already exists.
+
+        BM25 parameter notes (k1=1.2, b=0.75 — Tantivy defaults)
+        -----------------------------------------------------------
+        Tantivy hardcodes k1=1.2 and b=0.75 in ``bm25.rs``; they are
+        not configurable through Tantivy's API or LanceDB's
+        ``create_fts_index()``.
+
+        * **k1 (term frequency saturation):**  For AST-level code chunks
+          (typically 50-500 lines), term frequency saturates naturally in
+          short documents, so the exact k1 matters less.  Common code
+          keywords (``def``, ``class``, ``return``) are high-frequency /
+          low-signal, but RRF fusion with vector search already
+          down-weights pure keyword noise.
+        * **b (document length normalization):**  Code chunk length varies
+          by complexity, not topical breadth.  Lower b (0.3-0.5) could
+          reduce unfair length penalty on complex functions, but our
+          AST-segmented chunks have bounded length variation (max 6000
+          chars with head/tail truncation).
+        * **Sourcegraph's approach:**  Their gains came from BM25F
+          field-level boosting (5x for symbol names), not from tuning
+          k1/b.  Our post-retrieval heuristics (1.4x name boost, path
+          relevance boost) achieve a similar effect.
+
+        Verdict: defaults are acceptable.  Our hybrid search architecture
+        (RRF + heuristics + optional reranker) compensates for any BM25
+        parameter suboptimality.
         """
         if self._table is None:
             return
@@ -434,7 +460,7 @@ class CodeIndexManager:
             .refine_factor(5)
         )
         if where_clause:
-            query_builder = query_builder.where(where_clause)
+            query_builder = query_builder.where(where_clause, prefilter=True)
         return query_builder.limit(fetch_k).to_pandas()
 
     def _hybrid_search(
@@ -457,7 +483,7 @@ class CodeIndexManager:
             .text(query_text)
         )
         if where_clause:
-            query_builder = query_builder.where(where_clause)
+            query_builder = query_builder.where(where_clause, prefilter=True)
         return query_builder.limit(fetch_k).to_pandas()
 
     def _has_fts_index(self) -> bool:
@@ -838,12 +864,17 @@ class CodeIndexManager:
     def _escape_like_pattern(value: str) -> str:
         """Escape a value for safe use inside a SQL LIKE pattern.
 
-        Escapes single quotes (SQL string delimiter), ``%`` (matches any
-        sequence), and ``_`` (matches any single character) so that
-        user-provided filter values are treated as literal strings.
+        Escapes backslash (the ESCAPE character in all LIKE clauses), single
+        quotes (SQL string delimiter), ``%`` (any-sequence wildcard), and ``_``
+        (single-character wildcard) so filter values are treated as literals.
+
+        Backslash must be escaped first — before ``%`` and ``_`` — because
+        those substitutions introduce new backslashes that must not be
+        double-escaped.
         """
         return (
             value
+            .replace("\\", "\\\\")   # Must be first: escape the ESCAPE char itself
             .replace("'", "''")
             .replace("%", "\\%")
             .replace("_", "\\_")
