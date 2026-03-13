@@ -452,6 +452,13 @@ class CodeSearchServer:
         snippet = CodeSearchServer._make_snippet(result.content_preview)
         if snippet:
             item['snippet'] = snippet
+        # Expose pre-reranker RRF/vector score when reranking was applied.
+        # score stays as the primary sort key (reranker score).
+        # vector_score shows what the hybrid search scored before reranking.
+        if result.context_info.get("reranked"):
+            vector_score = result.context_info.get("vector_similarity")
+            if vector_score is not None:
+                item['vector_score'] = round(vector_score, 2)
         return item
 
     @staticmethod

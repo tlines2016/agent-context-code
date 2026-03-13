@@ -224,15 +224,15 @@ class TestRerankerDeviceResolution:
              patch("transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model) as mock_from:
             mock_mps.is_available.return_value = True
             reranker._ensure_loaded()
-            # MPS should use float32
+            # MPS should use float16
             call_kwargs = mock_from.call_args[1]
-            assert call_kwargs["torch_dtype"] == torch.float32
+            assert call_kwargs["torch_dtype"] == torch.float16
             # Device should be mps
             mock_model.to.assert_called_with("mps")
 
     @patch("torch.cuda.is_available", return_value=False)
-    def test_mps_uses_float32(self, _cuda):
-        """MPS uses float32 (bfloat16 unsupported on MPS)."""
+    def test_mps_uses_float16(self, _cuda):
+        """MPS uses float16 for memory efficiency on Apple Silicon."""
         import torch
         from reranking.reranker import CodeReranker
 
@@ -250,7 +250,7 @@ class TestRerankerDeviceResolution:
             mock_mps.is_available.return_value = True
             reranker._ensure_loaded()
             call_kwargs = mock_from.call_args[1]
-            assert call_kwargs["torch_dtype"] == torch.float32
+            assert call_kwargs["torch_dtype"] == torch.float16
 
 
 # ---------------------------------------------------------------------------
@@ -308,3 +308,69 @@ class TestDetectGpuInfo:
         with patch.dict("sys.modules", {"torch": None}):
             result = _detect_gpu_info()
             assert "unknown" in result
+
+
+# ---------------------------------------------------------------------------
+# CrossEncoder dtype selection in _load_cross_encoder()
+# ---------------------------------------------------------------------------
+
+class TestCrossEncoderDtype:
+    """Verify float16 model_kwargs for CrossEncoder rerankers on CUDA."""
+
+    @patch("torch.cuda.is_available", return_value=True)
+    def test_non_cpu_feasible_on_cuda_gets_float16(self, _cuda):
+        """BGE reranker (cpu_feasible=False) should get float16 on CUDA."""
+        import torch
+        from reranking.reranker import CodeReranker
+
+        reranker = CodeReranker(model_name="BAAI/bge-reranker-v2-m3", device="auto")
+        mock_ce_instance = MagicMock()
+
+        with patch("sentence_transformers.CrossEncoder", return_value=mock_ce_instance) as MockCE:
+            reranker._ensure_loaded()
+            call_kwargs = MockCE.call_args[1]
+            assert call_kwargs["model_kwargs"] == {"torch_dtype": torch.float16}
+
+    @patch("torch.cuda.is_available", return_value=True)
+    def test_cpu_feasible_on_cuda_no_float16(self, _cuda):
+        """MiniLM reranker (cpu_feasible=True) should NOT get float16."""
+        from reranking.reranker import CodeReranker
+
+        reranker = CodeReranker(
+            model_name="cross-encoder/ms-marco-MiniLM-L-6-v2", device="auto"
+        )
+        mock_ce_instance = MagicMock()
+
+        with patch("sentence_transformers.CrossEncoder", return_value=mock_ce_instance) as MockCE:
+            reranker._ensure_loaded()
+            call_kwargs = MockCE.call_args[1]
+            assert call_kwargs.get("model_kwargs") is None
+
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_cpu_device_no_float16(self, _cuda):
+        """On CPU, even non-cpu-feasible models should NOT get float16."""
+        from reranking.reranker import CodeReranker
+
+        reranker = CodeReranker(model_name="BAAI/bge-reranker-v2-m3", device="cpu")
+        mock_ce_instance = MagicMock()
+
+        with patch("sentence_transformers.CrossEncoder", return_value=mock_ce_instance) as MockCE:
+            reranker._ensure_loaded()
+            call_kwargs = MockCE.call_args[1]
+            assert call_kwargs.get("model_kwargs") is None
+
+    @patch("torch.cuda.is_available", return_value=False)
+    def test_non_cpu_feasible_on_mps_gets_float16(self, _cuda):
+        """BGE reranker (cpu_feasible=False) should get float16 on MPS."""
+        import torch
+        from reranking.reranker import CodeReranker
+
+        reranker = CodeReranker(model_name="BAAI/bge-reranker-v2-m3", device="auto")
+        mock_ce_instance = MagicMock()
+
+        with patch("torch.backends.mps", create=True) as mock_mps, \
+             patch("sentence_transformers.CrossEncoder", return_value=mock_ce_instance) as MockCE:
+            mock_mps.is_available.return_value = True
+            reranker._ensure_loaded()
+            call_kwargs = MockCE.call_args[1]
+            assert call_kwargs["model_kwargs"] == {"torch_dtype": torch.float16}

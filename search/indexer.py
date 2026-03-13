@@ -460,7 +460,7 @@ class CodeIndexManager:
             .refine_factor(5)
         )
         if where_clause:
-            query_builder = query_builder.where(where_clause)
+            query_builder = query_builder.where(where_clause, prefilter=True)
         return query_builder.limit(fetch_k).to_pandas()
 
     def _hybrid_search(
@@ -483,7 +483,7 @@ class CodeIndexManager:
             .text(query_text)
         )
         if where_clause:
-            query_builder = query_builder.where(where_clause)
+            query_builder = query_builder.where(where_clause, prefilter=True)
         return query_builder.limit(fetch_k).to_pandas()
 
     def _has_fts_index(self) -> bool:

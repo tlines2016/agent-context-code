@@ -23,7 +23,8 @@ class SentenceTransformerModel(EmbeddingModel):
         self,
         model_name: str,
         cache_dir: Optional[str] = None,
-        device: str = "auto"
+        device: str = "auto",
+        trust_remote_code: bool = False,
     ):
         """Initialize SentenceTransformerModel.
 
@@ -31,10 +32,12 @@ class SentenceTransformerModel(EmbeddingModel):
             model_name: Name of the model to load
             cache_dir: Directory to cache the model
             device: Device to load model on
+            trust_remote_code: Allow custom model code from HuggingFace Hub
         """
         super().__init__(device=device)
         self.model_name = model_name
         self.cache_dir = cache_dir
+        self._trust_remote_code = trust_remote_code
         self._model_loaded = False
         self._logger = logging.getLogger(__name__)
 
@@ -60,10 +63,19 @@ class SentenceTransformerModel(EmbeddingModel):
 
         try:
             model_source = str(local_model_dir) if local_model_dir else self.model_name
+
+            # Float16 on CUDA (NVIDIA + AMD ROCm) and MPS (Apple Silicon).
+            # CPU float16 is 5-10x slower on x86 — keep float32 there.
+            _model_kwargs = {}
+            if self._device in ("cuda", "mps"):
+                _model_kwargs["torch_dtype"] = torch.float16
+
             model = SentenceTransformer(
                 model_source,
                 cache_folder=self.cache_dir,
-                device=self._device
+                device=self._device,
+                trust_remote_code=self._trust_remote_code,
+                model_kwargs=_model_kwargs if _model_kwargs else None,
             )
             self._logger.info(f"Model loaded successfully on device: {model.device}")
             self._model_loaded = True

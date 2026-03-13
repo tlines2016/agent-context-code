@@ -62,16 +62,24 @@ class CodeReranker:
     def _load_cross_encoder(self) -> None:
         """Load a sentence-transformers CrossEncoder model."""
         from sentence_transformers import CrossEncoder
+        import torch
 
         logger.info("Loading CrossEncoder reranker: %s", self._model_name)
 
-        # CrossEncoder handles device selection internally
         device = self._resolve_device()
+
+        # Only GPU-exclusive models (cpu_feasible=False) benefit from float16.
+        # CPU-default models (MiniLM) stay float32 to avoid inference slowdown
+        # and known dtype mismatch bugs in the CrossEncoder path.
+        model_kwargs = {}
+        if device in ("cuda", "mps") and not self._config.cpu_feasible:
+            model_kwargs["torch_dtype"] = torch.float16
 
         self._model = CrossEncoder(
             self._model_name,
             max_length=self._config.max_length,
             device=device,
+            model_kwargs=model_kwargs if model_kwargs else None,
         )
 
         logger.info(
@@ -87,9 +95,9 @@ class CodeReranker:
         logger.info("Loading causal LM reranker: %s", self._model_name)
 
         device = self._resolve_device()
-        # float16 on CUDA (works for both NVIDIA and AMD ROCm consumer GPUs),
-        # float32 on CPU and MPS (MPS does not support bfloat16).
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        # float16 on CUDA (NVIDIA + AMD ROCm) and MPS (Apple Silicon).
+        # CPU float16 is 5-10x slower on x86 — keep float32 there.
+        dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self._model_name,

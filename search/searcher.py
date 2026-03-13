@@ -165,6 +165,16 @@ class IntelligentSearcher:
         # Post-process and rank results
         ranked_results = self._rank_results(search_results, query, intent_tags, reranked=reranked)
 
+        # Deduplicate by chunk_id — hybrid search (BM25 + vector) can
+        # surface the same chunk from both branches before RRF merging.
+        seen_chunk_ids: set = set()
+        deduped_results: List[SearchResult] = []
+        for result in ranked_results:
+            if result.chunk_id not in seen_chunk_ids:
+                seen_chunk_ids.add(result.chunk_id)
+                deduped_results.append(result)
+        ranked_results = deduped_results
+
         # Apply per-file diversity cap (excess pushed to end, not removed).
         if max_results_per_file is not None:
             ranked_results = self._apply_per_file_cap(ranked_results, max_results_per_file)
@@ -276,6 +286,13 @@ class IntelligentSearcher:
                 'folder_path': '/'.join(folder_structure) if folder_structure else None
             }
         
+        # Thread reranker enrichment data through to the result object
+        if metadata.get("reranked"):
+            context_info["reranked"] = True
+            vector_similarity = metadata.get("vector_similarity")
+            if vector_similarity is not None:
+                context_info["vector_similarity"] = float(vector_similarity)
+
         return SearchResult(
             chunk_id=chunk_id,
             similarity_score=similarity,

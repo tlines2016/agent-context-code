@@ -127,7 +127,8 @@ class CodeEmbedder:
             self._model = SentenceTransformerModel(
                 model_name=model_name,
                 cache_dir=cache_dir,
-                device=device
+                device=device,
+                trust_remote_code=self.model_config.trust_remote_code,
             )
         else:
             raise ValueError("Embedding model name must not be empty.")

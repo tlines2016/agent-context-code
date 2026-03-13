@@ -47,6 +47,7 @@ class EmbeddingModelConfig:
     description: str = ""
     recommended_for: str = ""
     gpu_default: bool = False
+    trust_remote_code: bool = False
 
 
 MODEL_CATALOG = {
@@ -90,8 +91,7 @@ MODEL_CATALOG = {
     ),
     # ── Unsloth-optimised Qwen3-Embedding-4B ─────────────────────────────
     # This is the primary target model for GPU-accelerated local search.
-    # The unsloth variant loads with flash_attention_2 + float16 on CUDA,
-    # fitting entirely in 16 GB VRAM (RTX 5080).
+    # Loaded in float16 on CUDA (~8 GB VRAM), flash_attn optional.
     #
     # IMPORTANT: query_prefix is set so search queries are prefixed with the
     # retrieval instruction, but document_prefix is deliberately empty — the
@@ -122,8 +122,10 @@ MODEL_CATALOG = {
     "Salesforce/SFR-Embedding-Code-400M_R": EmbeddingModelConfig(
         model_name="Salesforce/SFR-Embedding-Code-400M_R",
         short_name="sfr-code-400m",
+        embedding_dimension=1024,
         description="Code-focused embedding model for repositories where symbol and implementation search matters most.",
         recommended_for="Good code-search-specific candidate when source retrieval quality matters more than raw speed.",
+        trust_remote_code=True,
     ),
 }
 

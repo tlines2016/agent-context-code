@@ -12,19 +12,19 @@
 Tasks are grouped into four sequential sessions, ordered by priority and relatedness.
 Complete and verify each group before starting the next.
 
-### Group 1 — Critical fixes (Tasks 7A + 7B + 1)
+### Group 1 — Critical fixes (Tasks 7A + 7B + 1) ✅ COMPLETED
 Model dtype correctness and filter bug fix. All low-risk, isolated changes.
 
-- **7A**: Float16 for SentenceTransformer on CUDA + SFR `trust_remote_code` fix — `embeddings/sentence_transformer.py`, `embeddings/model_catalog.py`
-- **7B**: Float16 for BGE CrossEncoder reranker — `reranking/reranker.py` (`_load_cross_encoder` only)
-- **1**: `prefilter=True` for file_pattern filtering — `search/indexer.py` (`_hybrid_search`, `_vector_search`)
+- **7A** ✅: Float16 for SentenceTransformer on CUDA + SFR `trust_remote_code` fix — `embeddings/sentence_transformer.py`, `embeddings/model_catalog.py`
+- **7B** ✅: Float16 for BGE CrossEncoder reranker — `reranking/reranker.py` (`_load_cross_encoder` only)
+- **1** ✅: `prefilter=True` for file_pattern filtering — `search/indexer.py` (`_hybrid_search`, `_vector_search`)
 
-### Group 2 — Search quality (Tasks 6 + 2 + 5)
+### Group 2 — Search quality (Tasks 6 + 2 + 5) ✅ COMPLETED
 Deduplication, score transparency, and the strings.yaml update. All additive.
 
-- **6**: Duplicate chunk_id deduplication — `search/searcher.py` (`_semantic_search`, in the `for chunk_id, similarity, metadata in raw_results` loop before `_create_search_result`)
-- **2**: Surface `vector_score` in output — `search/searcher.py` (`_create_search_result`), `mcp_server/code_search_server.py` (`_format_result`)
-- **5**: Score hint + chunk_type tip — `mcp_server/strings.yaml` (one appended line to `search_code`)
+- **6** ✅: Duplicate chunk_id deduplication — `search/searcher.py` (`_semantic_search`, after `_rank_results` and before `_apply_per_file_cap`). Uses a `seen_chunk_ids` set to keep first (highest-ranked) occurrence only. Tests: 2 new tests in `TestDeduplication`.
+- **2** ✅: Surface `vector_score` in output — `search/searcher.py` (`_create_search_result` threads `reranked`/`vector_similarity` from metadata into `context_info`), `mcp_server/code_search_server.py` (`_format_result` surfaces `vector_score` when reranked). Tests: 4 new tests in `TestRerankerMetadataThreading` and `TestFormatResultVectorScore`.
+- **5** ✅: Score hint + chunk_type tip — `mcp_server/strings.yaml` (one appended line to `search_code` description)
 
 ### Group 3 — Min score threshold (Task 3)
 Standalone: modifies `reranking/reranker.py` (`rerank()`) and `search/searcher.py`
@@ -63,11 +63,12 @@ Items **not** included in this plan, and why:
 
 ---
 
-## Task 1 — Fix `file_pattern` Filtering (Root Cause: Missing `prefilter=True`)
+## Task 1 — Fix `file_pattern` Filtering (Root Cause: Missing `prefilter=True`) ✅ COMPLETED
 
 **Evaluation finding:** §4 Finding 1 — BUG, Medium severity
 **Files:** `search/indexer.py`
 **Risk:** Low — purely additive parameter. Improves filter correctness; no schema changes.
+**Status:** Implemented. Added `prefilter=True` to `.where()` in both `_vector_search()` and `_hybrid_search()`. Tests added in `TestPrefilterFlag` (4 tests covering both methods, with and without clauses). All 425 unit tests pass.
 
 ### Root cause
 
@@ -123,12 +124,13 @@ builder integration — add a mock-based test for the prefilter flag.
 
 ---
 
-## Task 2 — Surface Reranker Score as a Separate Output Field
+## Task 2 — Surface Reranker Score as a Separate Output Field ✅ COMPLETED
 
 **Evaluation finding:** §4 Finding 2 (partial); §7 Potential improvement #4
 **Files:** `mcp_server/code_search_server.py`
 **Risk:** Additive. New optional field only appears when reranking was used. No fields
 removed or renamed.
+**Status:** Implemented. Two-part change: (1) `_create_search_result()` in `searcher.py` threads `reranked` and `vector_similarity` from metadata into `context_info`. (2) `_format_result()` in `code_search_server.py` surfaces `vector_score` (rounded to 2 decimals) when reranked. Cross-project search via `_search_project()` also benefits since it uses the same `_format_result()`. Tests: 4 new tests covering both presence and absence of `vector_score`.
 
 ### Motivation
 
@@ -433,11 +435,12 @@ by `CODE_SEARCH_MODEL` and `CODE_SEARCH_STORAGE`.
 
 ---
 
-## Task 5 — Update Tool Description with Score Guidance
+## Task 5 — Update Tool Description with Score Guidance ✅ COMPLETED
 
 **Evaluation finding:** §4 Finding 8; §7 Potential improvement #6
 **Files:** `mcp_server/strings.yaml` (`search_code` tool description)
 **Risk:** Documentation-only. Zero code logic change.
+**Status:** Implemented. Appended one compact line to `search_code` description: score interpretation guidance (higher = better, below ~0.4 = weak) and `chunk_type` tip for behavioral queries. Kept under token budget for agent context windows.
 
 ### Motivation
 
@@ -477,11 +480,12 @@ thresholds, and the `chunk_type` tip is actionable without requiring further con
 
 ---
 
-## Task 6 — Duplicate Search Result De-duplication
+## Task 6 — Duplicate Search Result De-duplication ✅ COMPLETED
 
 **Evaluation finding:** Observed during code investigation (not in original evaluation)
-**Files:** `mcp_server/code_search_server.py` or `search/searcher.py`
+**Files:** `search/searcher.py`
 **Risk:** Low. Additive post-processing step.
+**Status:** Implemented. Added chunk_id deduplication in `_semantic_search()` after `_rank_results()` and before `_apply_per_file_cap()`. Uses a `seen_chunk_ids` set — O(n) per search. Preserves the first (highest-ranked) occurrence. Tests: 2 new tests in `TestDeduplication` (duplicate removal + passthrough for unique results).
 
 ### Motivation
 
@@ -522,12 +526,17 @@ final output contains each chunk ID exactly once.
 
 ---
 
-## Task 7 — Float16 Model Loading (Per-Model Audit Results)
+## Task 7 — Float16 Model Loading (Per-Model Audit Results) ✅ PARTS A & B COMPLETED
 
 **Source:** Float16 per-model audit via HuggingFace model cards
 **Files:** `embeddings/sentence_transformer.py`, `reranking/reranker.py`
 **Risk:** Low-medium. Device-guarded: float16 only activates on CUDA. CPU/MPS paths
 unchanged. The causal LM reranker path already does this correctly.
+**Status:** Parts A and B implemented. Part C (Flash Attention 2) deferred to separate PR.
+
+**Part A summary:** Added `model_kwargs={"torch_dtype": torch.float16}` to `SentenceTransformer()` when `device == "cuda"`. Added `trust_remote_code` field to `EmbeddingModelConfig` (default `False`), set `True` for `SFR-Embedding-Code-400M_R`, threaded through `embedder.py` → `sentence_transformer.py`. Added `embedding_dimension=1024` to SFR catalog entry. Updated Qwen3-Embedding-4B comment to reflect actual behavior. Tests: 5 new tests in `test_sentence_transformer.py`.
+
+**Part B summary:** Added `model_kwargs={"torch_dtype": torch.float16}` to `CrossEncoder()` in `_load_cross_encoder()` when `device == "cuda" and not self._config.cpu_feasible`. Only `BAAI/bge-reranker-v2-m3` is affected; MiniLM stays float32. Tests: 3 new tests in `TestCrossEncoderDtype` class in `test_device_resolution.py`.
 
 ### Audit Summary
 

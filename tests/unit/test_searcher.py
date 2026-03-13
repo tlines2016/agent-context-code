@@ -479,3 +479,131 @@ class TestBm25QueryExpansion:
 
         # embed_query should receive the stripped original, not BM25-expanded
         embedder.embed_query.assert_called_once_with("getUserById")
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — Duplicate chunk_id deduplication
+# ---------------------------------------------------------------------------
+
+class TestDeduplication:
+    def _full_meta(self, chunk_id: str = "c0", **overrides) -> dict:
+        base = {
+            "content_preview": "def foo(): pass",
+            "file_path": "/proj/foo.py",
+            "relative_path": "foo.py",
+            "chunk_type": "function",
+            "name": "foo",
+            "parent_name": "",
+            "start_line": 1,
+            "end_line": 5,
+            "docstring": "",
+            "tags": [],
+            "folder_structure": ["proj"],
+        }
+        base.update(overrides)
+        return base
+
+    def test_duplicate_chunk_ids_are_removed(self):
+        """When index_manager returns duplicate chunk_ids, only the first survives."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.9, self._full_meta("c0")),
+            ("c0", 0.85, self._full_meta("c0")),  # duplicate
+            ("c1", 0.7, self._full_meta("c1", name="bar", relative_path="bar.py")),
+        ]
+        embedder = _make_mock_embedder()
+        s = IntelligentSearcher(im, embedder, reranker=None)
+        results = s.search("query", k=5, context_depth=0)
+        chunk_ids = [r.chunk_id for r in results]
+        assert chunk_ids.count("c0") == 1
+        assert "c1" in chunk_ids
+
+    def test_no_duplicates_passes_through_unchanged(self):
+        """When there are no duplicates, all results are returned."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.9, self._full_meta("c0")),
+            ("c1", 0.7, self._full_meta("c1", name="bar")),
+            ("c2", 0.5, self._full_meta("c2", name="baz")),
+        ]
+        embedder = _make_mock_embedder()
+        s = IntelligentSearcher(im, embedder, reranker=None)
+        results = s.search("query", k=5, context_depth=0)
+        assert len(results) == 3
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — Reranker metadata threading into SearchResult.context_info
+# ---------------------------------------------------------------------------
+
+class TestRerankerMetadataThreading:
+    def _full_meta(self, chunk_id: str = "c0", **overrides) -> dict:
+        base = {
+            "content_preview": "def foo(): pass",
+            "file_path": "/proj/foo.py",
+            "relative_path": "foo.py",
+            "chunk_type": "function",
+            "name": "foo",
+            "parent_name": "",
+            "start_line": 1,
+            "end_line": 5,
+            "docstring": "",
+            "tags": [],
+            "folder_structure": ["proj"],
+        }
+        base.update(overrides)
+        return base
+
+    def test_reranked_flag_in_context_info(self):
+        """When reranker runs, SearchResult.context_info contains 'reranked': True."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.8, self._full_meta("c0")),
+        ]
+        embedder = _make_mock_embedder()
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            ("c0", 0.95, {
+                **self._full_meta("c0"),
+                "reranked": True,
+                "vector_similarity": 0.8,
+            }),
+        ]
+        s = IntelligentSearcher(im, embedder, reranker=mock_reranker)
+        results = s.search("query", k=1, context_depth=0)
+        assert results[0].context_info.get("reranked") is True
+        assert results[0].context_info["vector_similarity"] == pytest.approx(0.8)
+
+    def test_no_reranker_no_reranked_flag(self):
+        """Without a reranker, context_info should not contain 'reranked'."""
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.8, self._full_meta("c0")),
+        ]
+        embedder = _make_mock_embedder()
+        s = IntelligentSearcher(im, embedder, reranker=None)
+        results = s.search("query", k=1, context_depth=0)
+        assert "reranked" not in results[0].context_info
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — _format_result vector_score surfacing
+# ---------------------------------------------------------------------------
+
+class TestFormatResultVectorScore:
+    def test_vector_score_present_when_reranked(self):
+        """_format_result should include vector_score when reranked."""
+        from mcp_server.code_search_server import CodeSearchServer
+        result = _make_search_result("c0", similarity=0.95)
+        result.context_info = {"reranked": True, "vector_similarity": 0.8}
+        formatted = CodeSearchServer._format_result(result)
+        assert "vector_score" in formatted
+        assert formatted["vector_score"] == 0.8
+
+    def test_vector_score_absent_when_not_reranked(self):
+        """_format_result should NOT include vector_score when not reranked."""
+        from mcp_server.code_search_server import CodeSearchServer
+        result = _make_search_result("c0", similarity=0.9)
+        result.context_info = {}
+        formatted = CodeSearchServer._format_result(result)
+        assert "vector_score" not in formatted
