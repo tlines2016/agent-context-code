@@ -16,6 +16,7 @@ Input/output contract:
   replaced by the reranker relevance score (0-1).
 """
 
+import gc
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
@@ -233,23 +234,29 @@ class CodeReranker:
             return_tensors="pt",
         ).to(self._model.device)
 
-        with torch.no_grad():
-            outputs = self._model(**inputs)
+        outputs = None
+        try:
+            with torch.no_grad():
+                outputs = self._model(**inputs)
 
-        scores = []
-        for i in range(len(passages)):
-            logits = outputs.logits[i, -1, :]
-            yes_logit = logits[self._yes_token_id].float().item()
-            no_logit = logits[self._no_token_id].float().item()
-            # Numerically stable softmax over yes/no logits.
-            shift = max(yes_logit, no_logit)
-            yes_exp = math.exp(yes_logit - shift)
-            no_exp = math.exp(no_logit - shift)
-            score = yes_exp / (yes_exp + no_exp)
-            score = max(0.0, min(1.0, score))
-            scores.append(score)
+            scores = []
+            for i in range(len(passages)):
+                logits = outputs.logits[i, -1, :]
+                yes_logit = logits[self._yes_token_id].float().item()
+                no_logit = logits[self._no_token_id].float().item()
+                # Numerically stable softmax over yes/no logits.
+                shift = max(yes_logit, no_logit)
+                yes_exp = math.exp(yes_logit - shift)
+                no_exp = math.exp(no_logit - shift)
+                score = yes_exp / (yes_exp + no_exp)
+                score = max(0.0, min(1.0, score))
+                scores.append(score)
 
-        return scores
+            return scores
+        finally:
+            # Release temporary tensors and GPU cache after scoring.
+            del inputs, outputs
+            self._release_gpu_cache()
 
     def _build_prompt(self, query: str, document: str) -> str:
         """Build the official Qwen3-Reranker chat-template prompt."""
@@ -265,6 +272,54 @@ class CodeReranker:
             "<|im_start|>assistant\n"
             "<think>\n\n</think>\n"
         )
+
+    # ------------------------------------------------------------------
+    # GPU memory management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _release_gpu_cache() -> None:
+        """Run gc.collect() + backend-aware GPU cache release.
+
+        Skipped entirely on CPU-only installs to avoid the overhead of
+        gc.collect() on every scoring call for zero benefit.
+        """
+        import torch
+
+        if torch.cuda.is_available():
+            gc.collect()
+            torch.cuda.empty_cache()
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            gc.collect()
+            torch.mps.empty_cache()
+
+    def offload_to_cpu(self) -> None:
+        """Move the loaded model to CPU and release GPU cache.
+
+        Safe to call when the model is not yet loaded (no-op).
+        ``model.to()`` is in-place — the cached ``CodeReranker`` instance
+        returned by the server's ``@lru_cache`` remains valid.
+        """
+        if self._model is None:
+            return
+        try:
+            self._model.to("cpu")
+            self._release_gpu_cache()
+        except Exception as exc:
+            logger.debug("offload_to_cpu skipped: %s", exc)
+
+    def restore_to_device(self) -> None:
+        """Move the loaded model back to its configured runtime device.
+
+        Safe to call when the model is not yet loaded (no-op).
+        """
+        if self._model is None:
+            return
+        device = self._resolve_device()
+        try:
+            self._model.to(device)
+        except Exception as exc:
+            logger.debug("restore_to_device skipped: %s", exc)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -284,6 +339,8 @@ class CodeReranker:
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
             logger.info("Reranker model unloaded")
 

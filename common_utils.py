@@ -411,3 +411,46 @@ def save_reranker_config(
     config_path = get_install_config_path(target_storage_dir)
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return config_path
+
+
+def save_idle_config(
+    idle_offload_minutes: Optional[int] = None,
+    idle_unload_minutes: Optional[int] = None,
+    storage_dir: Optional[Path] = None,
+) -> Path:
+    """Persist idle memory-management thresholds into install_config.json.
+
+    Only keys with non-None values are written; existing keys not supplied
+    are preserved.  Returns the path to the written config file.
+    """
+    target_storage_dir = storage_dir or get_storage_dir()
+    target_storage_dir.mkdir(parents=True, exist_ok=True)
+
+    config = load_local_install_config(target_storage_dir)
+
+    def _normalize_idle_minutes(value: Optional[int], key_name: str) -> Optional[int]:
+        """Validate idle threshold values before writing config.
+
+        Accepts non-negative integer-like values. Returns None unchanged so
+        callers can perform partial updates.
+        """
+        if value is None:
+            return None
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key_name} must be an integer >= 0, got {value!r}") from exc
+        if normalized < 0:
+            raise ValueError(f"{key_name} must be >= 0, got {normalized}")
+        return normalized
+
+    normalized_offload = _normalize_idle_minutes(idle_offload_minutes, "idle_offload_minutes")
+    normalized_unload = _normalize_idle_minutes(idle_unload_minutes, "idle_unload_minutes")
+    if normalized_offload is not None:
+        config["idle_offload_minutes"] = normalized_offload
+    if normalized_unload is not None:
+        config["idle_unload_minutes"] = normalized_unload
+
+    config_path = get_install_config_path(target_storage_dir)
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    return config_path

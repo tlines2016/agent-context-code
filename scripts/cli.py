@@ -44,6 +44,7 @@ try:
         save_local_install_config,
         load_reranker_config,
         save_reranker_config,
+        save_idle_config,
         detect_gpu_index_url,
     )
 except ImportError:
@@ -56,6 +57,7 @@ except ImportError:
         save_local_install_config,
         load_reranker_config,
         save_reranker_config,
+        save_idle_config,
         detect_gpu_index_url,
     )
 
@@ -341,6 +343,7 @@ def cmd_help() -> None:
         ("models install", "Download a model by short name"),
         ("config model", "Switch the active embedding model"),
         ("config reranker", "Toggle reranker, set model, or min-score"),
+        ("config idle", "Set idle offload/unload thresholds (minutes)"),
     ]
     for name, desc in cmds:
         print(f"  {cyan(name):<20s} {desc}")
@@ -1449,7 +1452,8 @@ def cmd_config() -> None:
                 "Usage: config model <short-name>  |  "
                 "config reranker <on|off>  |  "
                 "config reranker model <short-name>  |  "
-                "config reranker min-score <0.0-1.0>"
+                "config reranker min-score <0.0-1.0>  |  "
+                "config idle <offload|unload> <minutes>"
             )
         )
         sys.exit(1)
@@ -1482,6 +1486,16 @@ def cmd_config() -> None:
             print(red("Usage: config model <short-name>"))
             sys.exit(1)
         cmd_config_model(args[1])
+    elif sub == "idle":
+        if len(args) < 3:
+            print(
+                red(
+                    "Usage: config idle offload <minutes>  |  "
+                    "config idle unload <minutes>"
+                )
+            )
+            sys.exit(1)
+        cmd_config_idle(args[1], args[2])
     else:
         print(red(f"Unknown config subcommand: '{sub}'"))
         sys.exit(1)
@@ -1631,6 +1645,41 @@ def cmd_config_reranker_min_score(raw_value: str) -> None:
         f"Reranker min-score set to: {green(str(min_reranker_score))} "
         f"(model: {model_name}, {status}, recall_k={recall_k})"
     )
+    print("Restart the MCP server for the change to take effect.")
+
+
+def cmd_config_idle(kind: str, raw_minutes: str) -> None:
+    """Set idle offload/unload thresholds in install_config.json."""
+    storage = _get_storage_dir_or_report("config idle")
+    if storage is None:
+        return
+
+    kind_lower = kind.lower()
+    if kind_lower not in ("offload", "unload"):
+        print(red(f"Unknown idle kind: '{kind}'. Use 'offload' or 'unload'."))
+        sys.exit(1)
+
+    try:
+        minutes = int(raw_minutes)
+    except ValueError:
+        print(red(f"Invalid minutes: '{raw_minutes}'. Expected a non-negative integer."))
+        sys.exit(1)
+
+    if minutes < 0:
+        print(red(f"Invalid minutes: {minutes}. Must be >= 0 (0 = disabled)."))
+        sys.exit(1)
+
+    if kind_lower == "offload":
+        save_idle_config(idle_offload_minutes=minutes, storage_dir=storage)
+        label = "warm CPU offload"
+    else:
+        save_idle_config(idle_unload_minutes=minutes, storage_dir=storage)
+        label = "cold full unload"
+
+    if minutes == 0:
+        print(f"Idle {label}: {yellow('disabled')}")
+    else:
+        print(f"Idle {label}: {green(str(minutes))} minute(s)")
     print("Restart the MCP server for the change to take effect.")
 
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-context-local"
 version = "1.0.0"
-description = "Local semantic code search for AI coding assistants via MCP. Hybrid BM25 + vector search with tree-sitter AST chunking. 100% local — no API keys, no uploads."
+description = "Local semantic code search for AI coding assistants. MCP server with hybrid keyword + vector search and tree-sitter AST chunking. No API keys, no uploads — runs entirely on your machine."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

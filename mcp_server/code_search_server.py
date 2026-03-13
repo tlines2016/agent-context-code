@@ -9,6 +9,7 @@ inheritance) are available for graph-enriched search results.
 import os
 import json
 import math
+import time
 import asyncio
 import logging
 from pathlib import Path
@@ -17,11 +18,11 @@ from datetime import datetime
 from functools import lru_cache
 
 try:
-    from common_utils import get_storage_dir, get_embedding_lock_path, load_reranker_config
+    from common_utils import get_storage_dir, get_embedding_lock_path, load_reranker_config, load_local_install_config
 except ImportError:
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from common_utils import get_storage_dir, get_embedding_lock_path, load_reranker_config
+    from common_utils import get_storage_dir, get_embedding_lock_path, load_reranker_config, load_local_install_config
 
 from filelock import FileLock, Timeout as LockTimeout
 from chunking.multi_language_chunker import MultiLanguageChunker
@@ -49,6 +50,17 @@ class CodeSearchServer:
         self._current_project: Optional[str] = None
         self._code_graph: Optional[CodeGraph] = None
         self._code_graph_project: Optional[str] = None
+
+        # Two-tier idle memory management:
+        #   Tier 1 (warm offload): models move GPU → CPU RAM.  Fast restore
+        #          (~50-100 ms).  Frees VRAM only.
+        #   Tier 2 (cold unload):  models fully destroyed + lru_cache cleared.
+        #          Frees VRAM and RAM.  Cold-start restore (~5-30 s from disk).
+        self._idle_offload_seconds: int = self._parse_idle_offload_minutes()
+        self._idle_unload_seconds: int = self._parse_idle_unload_minutes()
+        self._last_query_monotonic: float = time.monotonic()
+        self._models_offloaded: bool = False
+        self._models_unloaded: bool = False
 
     def _graph_db_path(self, project_path: str, ensure_parent: bool = True) -> Path:
         """Return the per-project SQLite graph path."""
@@ -97,6 +109,226 @@ class CodeSearchServer:
                 logger.warning("Failed to close cached code graph: %s", exc)
         self._code_graph = None
         self._code_graph_project = None
+
+    # ------------------------------------------------------------------
+    # Idle GPU offload
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_idle_minutes_setting(
+        *,
+        env_key: str,
+        config_key: str,
+        default_minutes: int,
+    ) -> int:
+        """Resolve an idle threshold in seconds with defensive validation.
+
+        Precedence is environment variable, then install_config, then
+        hardcoded default. Invalid values fall back to the default instead of
+        silently disabling idle management.
+        """
+        source = "default"
+        raw = os.environ.get(env_key)
+        if raw is not None:
+            source = f"env:{env_key}"
+        else:
+            cfg = load_local_install_config()
+            raw = cfg.get(config_key)
+            if raw is not None:
+                source = f"install_config:{config_key}"
+
+        if raw is None:
+            return default_minutes * 60
+
+        try:
+            minutes = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid %s value from %s (%r). Falling back to default %d minutes.",
+                config_key,
+                source,
+                raw,
+                default_minutes,
+            )
+            return default_minutes * 60
+
+        if minutes < 0:
+            logger.warning(
+                "Negative %s value from %s (%r). Falling back to default %d minutes.",
+                config_key,
+                source,
+                raw,
+                default_minutes,
+            )
+            return default_minutes * 60
+
+        return minutes * 60
+
+    @staticmethod
+    def _parse_idle_offload_minutes() -> int:
+        """Resolve the warm-offload threshold in **seconds**.
+
+        Precedence: env var ``CODE_SEARCH_IDLE_OFFLOAD_MINUTES`` >
+        ``install_config.json["idle_offload_minutes"]`` > hardcoded 15.
+        Set to ``0`` to disable.
+        """
+        return CodeSearchServer._parse_idle_minutes_setting(
+            env_key="CODE_SEARCH_IDLE_OFFLOAD_MINUTES",
+            config_key="idle_offload_minutes",
+            default_minutes=15,
+        )
+
+    @staticmethod
+    def _parse_idle_unload_minutes() -> int:
+        """Resolve the cold-unload threshold in **seconds**.
+
+        Precedence: env var ``CODE_SEARCH_IDLE_UNLOAD_MINUTES`` >
+        ``install_config.json["idle_unload_minutes"]`` > hardcoded 30.
+        Set to ``0`` to disable.
+
+        When exceeded, models are fully destroyed and their ``lru_cache``
+        entries cleared, freeing both VRAM and system RAM.  The next query
+        triggers a cold start (full model reload from disk cache).
+
+        Must be greater than the warm-offload threshold to form a sensible
+        two-tier strategy; validation is done at use-site, not here.
+        """
+        return CodeSearchServer._parse_idle_minutes_setting(
+            env_key="CODE_SEARCH_IDLE_UNLOAD_MINUTES",
+            config_key="idle_unload_minutes",
+            default_minutes=30,
+        )
+
+    def _maybe_idle_offload(self) -> None:
+        """Tier 1: If the warm-offload threshold has been exceeded, move models to CPU.
+
+        Called synchronously at the start of each query.  When offload is
+        disabled (``_idle_offload_seconds == 0``) this is a fast no-op.
+
+        Skipped when models are already offloaded or fully unloaded (tier 2).
+        Only touches models that are already cached (``currsize > 0``).
+        Never triggers first-load.
+        """
+        if self._idle_offload_seconds == 0:
+            return
+        if self._models_offloaded or self._models_unloaded:
+            return
+
+        elapsed = time.monotonic() - self._last_query_monotonic
+        if elapsed < self._idle_offload_seconds:
+            return
+
+        logger.info(
+            "Idle %.0f s (threshold %d s) — offloading models to CPU",
+            elapsed,
+            self._idle_offload_seconds,
+        )
+        offloaded_any = False
+        if self.embedder.cache_info().currsize > 0:
+            try:
+                self.embedder().offload_to_cpu()
+                offloaded_any = True
+            except Exception as exc:
+                logger.debug("Embedder offload skipped: %s", exc)
+        if self.reranker.cache_info().currsize > 0:
+            rnk = self.reranker()
+            if rnk is not None and hasattr(rnk, "offload_to_cpu"):
+                try:
+                    rnk.offload_to_cpu()
+                    offloaded_any = True
+                except Exception as exc:
+                    logger.debug("Reranker offload skipped: %s", exc)
+        self._models_offloaded = offloaded_any
+
+    def _maybe_cold_unload(self) -> None:
+        """Tier 2: If the cold-unload threshold has been exceeded, fully destroy models.
+
+        Calls ``cleanup()`` on each model and clears the ``lru_cache`` so the
+        next query triggers a full cold start from the on-disk model cache.
+        Frees both VRAM and system RAM.
+
+        Skipped when models are already unloaded or the threshold is disabled.
+        The cold threshold must be >= the warm threshold to form a sensible
+        two-tier strategy; if misconfigured (cold < warm), cold is silently
+        skipped so the warm tier still functions.
+        """
+        if self._idle_unload_seconds == 0:
+            return
+        if self._models_unloaded:
+            return
+        # Guard: cold threshold must exceed warm threshold.
+        if 0 < self._idle_offload_seconds >= self._idle_unload_seconds:
+            return
+
+        elapsed = time.monotonic() - self._last_query_monotonic
+        if elapsed < self._idle_unload_seconds:
+            return
+
+        logger.info(
+            "Idle %.0f s (threshold %d s) — fully unloading models (cold start on next query)",
+            elapsed,
+            self._idle_unload_seconds,
+        )
+        # Destroy cached model instances and clear lru_cache entries.
+        if self.embedder.cache_info().currsize > 0:
+            try:
+                self.embedder().cleanup()
+            except Exception as exc:
+                logger.debug("Embedder cleanup skipped: %s", exc)
+            self.embedder.cache_clear()
+        if self.reranker.cache_info().currsize > 0:
+            try:
+                rnk = self.reranker()
+                if rnk is not None and hasattr(rnk, "cleanup"):
+                    rnk.cleanup()
+            except Exception as exc:
+                logger.debug("Reranker cleanup skipped: %s", exc)
+            self.reranker.cache_clear()
+
+        # Reset the searcher so the next get_searcher() call builds a fresh
+        # IntelligentSearcher with the newly lazy-loaded embedder/reranker.
+        # Without this, the old searcher would keep the old (destroyed) model
+        # objects alive via its internal references.
+        self._searcher = None
+
+        self._models_offloaded = False
+        self._models_unloaded = True
+
+    def _maybe_restore_models(self) -> None:
+        """Restore models to their runtime device if previously offloaded.
+
+        For tier 1 (warm offload): moves models back from CPU to GPU.
+        For tier 2 (cold unload): no-op here — the ``lru_cache`` was cleared,
+        so the next call to ``self.embedder()`` / ``self.reranker()`` in the
+        normal search path triggers a full lazy re-initialization automatically.
+        We just reset the flag so the idle timers start fresh.
+        """
+        if self._models_unloaded:
+            logger.info("Models were fully unloaded — cold start will occur on next use")
+            self._models_unloaded = False
+            return
+
+        if not self._models_offloaded:
+            return
+
+        logger.info("Restoring models to runtime device before query")
+        if self.embedder.cache_info().currsize > 0:
+            try:
+                self.embedder().restore_to_device()
+            except Exception as exc:
+                logger.debug("Embedder restore skipped: %s", exc)
+        if self.reranker.cache_info().currsize > 0:
+            rnk = self.reranker()
+            if rnk is not None and hasattr(rnk, "restore_to_device"):
+                try:
+                    rnk.restore_to_device()
+                except Exception as exc:
+                    logger.debug("Reranker restore skipped: %s", exc)
+        self._models_offloaded = False
+
+    def _update_last_query_time(self) -> None:
+        """Record the completion of a query for idle tracking."""
+        self._last_query_monotonic = time.monotonic()
 
     def _open_transient_graph(self, project_path: str, create_if_missing: bool = True) -> Optional[CodeGraph]:
         """Open a short-lived graph connection for cross-project calls.
@@ -366,6 +598,7 @@ class CodeSearchServer:
         max_results_per_file: int = None,
     ) -> str:
         """Implementation of search_code tool."""
+        should_update_idle_time = False
         try:
             if not query or not query.strip():
                 return json.dumps({
@@ -380,6 +613,17 @@ class CodeSearchServer:
                 })
 
             logger.info(f"🔍 MCP REQUEST: search_code(query='{query}', k={k}, file_pattern={file_pattern}, chunk_type={chunk_type}, project_path={project_path})")
+
+            # ── Idle memory management (two-tier) ─────────────────────────
+            # Tier 2 check first: if idle long enough, fully unload models.
+            # Tier 1 check second: if idle past warm threshold, offload to CPU.
+            # Then restore/re-init before running the query.
+            self._maybe_cold_unload()
+            self._maybe_idle_offload()
+            self._maybe_restore_models()
+            # From this point forward, count idle time from request completion.
+            # This prevents long-running queries from being mis-counted as idle.
+            should_update_idle_time = True
 
             # ── Cross-project search ─────────────────────────────────────────
             # When ``project_path`` is provided the search targets that project
@@ -470,6 +714,9 @@ class CodeSearchServer:
             logger.error(error_msg, exc_info=True)
             suggestion = "Ensure the project is indexed (use index_directory) and the embedding model is loaded."
             return json.dumps({"error": error_msg, "suggestion": suggestion})
+        finally:
+            if should_update_idle_time:
+                self._update_last_query_time()
 
     @staticmethod
     def _format_result(result) -> dict:
@@ -769,7 +1016,14 @@ class CodeSearchServer:
 
     def find_similar_code(self, chunk_id: str, k: int = 5) -> str:
         """Implementation of find_similar_code tool."""
+        should_update_idle_time = False
         try:
+            self._maybe_cold_unload()
+            self._maybe_idle_offload()
+            self._maybe_restore_models()
+            # Count idle from completion so query runtime is not treated as idle.
+            should_update_idle_time = True
+
             searcher = self.get_searcher()
             results = searcher.find_similar_to_chunk(chunk_id, k=k)
 
@@ -795,6 +1049,9 @@ class CodeSearchServer:
             error_msg = f"Similar code search failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
             return json.dumps({"error": error_msg, "suggestion": "Verify the chunk_id is from a recent search_code result. The chunk may have been removed during re-indexing."})
+        finally:
+            if should_update_idle_time:
+                self._update_last_query_time()
 
     def get_index_status(self) -> str:
         """Implementation of get_index_status tool.

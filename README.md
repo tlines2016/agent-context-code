@@ -37,68 +37,37 @@
 
 **Local semantic code search for AI coding assistants.**
 
-AGENT Context Local is an MCP server that indexes your codebase using
-tree-sitter AST-aware chunking and searches it with hybrid BM25 keyword +
-vector similarity ranking, combined via Reciprocal Rank Fusion. Your AI
-coding assistant can find code by meaning — "where do we validate auth
-tokens?" — instead of relying on grep or burning context on file-by-file
-exploration. Everything runs on your machine. No API keys, no uploads,
-no hosted services.
+AGENT Context Local is an MCP server that gives your AI coding assistant
+semantic understanding of your codebase. It parses code into functions and
+classes using tree-sitter, then combines keyword matching with vector
+similarity so you can search by meaning — *"where do we validate auth
+tokens?"* — instead of relying on grep or burning context on file-by-file
+exploration.
 
-The canonical repository is
-[tlines2016/agent-context-code](https://github.com/tlines2016/agent-context-code).
+Everything runs on your machine. No API keys, no uploads, no hosted services.
+
+Source: [tlines2016/agent-context-code](https://github.com/tlines2016/agent-context-code)
 
 ## Key Features
 
-- **Hybrid search** — BM25 keyword matching and vector similarity combined via Reciprocal Rank Fusion (RRF) for results that are both precise and semantically relevant.
+- **Hybrid search** — keyword matching and vector similarity combined for results that are both precise and semantically relevant.
 - **AST-aware chunking** — Tree-sitter parses your code into functions, classes, and methods. No arbitrary line splits, no broken context.
-- **100% local** — Embeddings generated on-device, LanceDB embedded database (think SQLite for vectors), zero API calls, zero uploads.
-- **Incremental indexing** — A Merkle DAG tracks file-level content hashes. Only modified files get re-indexed, so re-indexing a large repo after a small change takes seconds.
+- **100% local** — Embeddings generated on-device, embedded vector database, zero API calls, zero uploads. Works in air-gapped, compliance-restricted, and proprietary IP environments.
+- **Incremental indexing** — Content-hash tracking means only modified files get re-indexed. Re-indexing after a small change takes seconds.
 - **Graph-enriched results** — Search results include structural context: class hierarchy, method containment, and cross-file inheritance.
-- **29 languages, 39 file extensions** — Python, JS/TS/JSX/TSX, Go, Rust, Java, Kotlin, C/C++, C#, Svelte, Bash/Shell, HTML, CSS, Ruby, PHP, Swift, SQL, Terraform/HCL, Scala, Lua, Elixir, Haskell, Markdown, YAML, TOML, and JSON.
-- **Optional reranking** — Two-stage retrieval with a cross-encoder second pass for higher-precision results when you need them.
-- **Lightweight default model** — Ships with mxbai-embed-xsmall-v1 (22.7M params, 384-dim). Non-gated, CPU-optimised, no GPU required. Indexes large repos fast.
-
-## Who Is This For?
-
-- **Developers using AI coding assistants** — Give Claude, Copilot, Codex, or Gemini actual semantic understanding of your codebase instead of relying on file-tree context or text search.
-- **Teams working in large codebases** — When grep and built-in search stop scaling, hybrid vector + keyword search over AST-parsed chunks finds what you actually need.
-- **Privacy-conscious engineers** — If your code can't leave your machine — compliance, proprietary IP, air-gapped environments — this runs entirely local with no external dependencies.
-
-## Supported Clients
-
-Works with any tool that speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol):
-
-| Client | Notes |
-|--------|-------|
-| **Claude Code** | Built-in MCP support (best-tested) |
-| **Cursor** | MCP server configuration |
-| **Codex CLI** | MCP server configuration |
-| **Gemini CLI** | MCP server configuration |
-| **VS Code** — Copilot Chat | MCP extension support |
-| **VS Code** — Cline / Roo | MCP server configuration |
-| **VS Code** — Continue | MCP server configuration |
-
-If your tool supports MCP, it can use AGENT Context Local.
-See [docs/MCP_SETUP.md](docs/MCP_SETUP.md) for detailed per-tool setup instructions.
+- **29 languages** — Python, TypeScript, Go, Rust, Java, C/C++, and [23 more](#supported-languages).
+- **Optional reranking** — Cross-encoder second pass for higher-precision results when you need them.
+- **Runs on any laptop** — Default model is 22.7M params, CPU-optimized, no GPU required. GPU users get auto-upgraded models for higher quality.
+- **Put your GPU to work** — Want to leverage your GPU to help your AI Agent work on your codebase? AGENT Context Local auto-detects your hardware and upgrades to higher-quality embedding and reranking models. Continue to use APIs for SOTA AI Agent coding while your local GPU powers the retrieval layer that makes it smarter.
 
 ## Getting Started
 
-From zero to working code search in five steps. All commands below run in
-your **regular terminal** — not inside an AI assistant session.
-
-> **Terminal basics:** On macOS, open **Terminal** (in Applications > Utilities).
-> On Windows, open **PowerShell** or **Windows Terminal** (search for it in the
-> Start menu). On Linux, open your preferred terminal emulator.
->
-> Useful commands if you're new to the terminal:
-> - `pwd` (macOS/Linux) or `cd` with no arguments (Windows) — print your current directory
-> - `cd /path/to/folder` — change directory
-> - `ls` (macOS/Linux) or `dir` (Windows) — list files in the current directory
+Three commands to working code search. Run these in your **regular terminal**
+— not inside an AI assistant session.
 
 ### Quick Install (PyPI)
 
-If you have Python 3.12+ and uv (or pipx) already installed, the fastest path:
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or pipx):
 
 ```bash
 # Install the package
@@ -112,14 +81,18 @@ claude mcp add code-search --scope user -- agent-context-local-mcp
 agent-context-local doctor
 ```
 
-The PyPI install gives you two commands: `agent-context-local` (CLI) and
-`agent-context-local-mcp` (MCP server). No git clone needed.
+That's it. The PyPI install gives you two commands: `agent-context-local`
+(CLI) and `agent-context-local-mcp` (MCP server). No git clone needed.
 
 For other MCP clients (Cursor, Copilot, Gemini CLI, Codex, etc.), see
 [docs/MCP_SETUP.md](docs/MCP_SETUP.md) for per-tool registration instructions.
 
+> **New to the terminal?** On macOS, open **Terminal** (Applications > Utilities).
+> On Windows, open **PowerShell** or **Windows Terminal**. On Linux, use your
+> preferred terminal emulator.
+
 <details>
-<summary>Development / Source Install (git clone)</summary>
+<summary>Development / Source Install (git clone) — five-step guide</summary>
 
 ### Step 1: Prerequisites
 
@@ -267,10 +240,10 @@ Windows PowerShell:
 claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA\agent-context-code" python mcp_server/server.py
 ```
 
-> **GPU users:** If the install script detected a GPU, add `--extra cu128`
-> (or `cu126`) after `uv run` to use GPU-accelerated PyTorch. The install
-> script includes this automatically when it auto-registers. You can also
-> run `gpu-setup` to detect and configure GPU support at any time.
+> **GPU users:** Use the commands above as-is. The installer and setup tooling
+> automatically configure GPU-enabled runs when supported, so most users should
+> not add manual `uv run --extra ...` flags. If GPU acceleration is not being
+> used, run `python scripts/cli.py doctor` (or `gpu-setup`) to fix configuration.
 
 **For other MCP clients** (Cursor, Codex CLI, Gemini CLI, VS Code extensions, etc.):
 
@@ -320,8 +293,11 @@ to your project directory. Then tell the assistant:
 index this codebase
 ```
 
-The first indexing run processes every file. Subsequent runs are incremental — only
-changed files are re-indexed. Once indexed, try:
+The first indexing run processes every file and generates embeddings for each code
+chunk. This initial run may take a few minutes depending on your codebase size and
+hardware (GPU installs are significantly faster). Once the embeddings are built,
+they are stored locally and subsequent runs are incremental — only changed files
+are re-indexed, making future indexing near-instant. Once indexed, try:
 
 ```text
 search for authentication logic
@@ -339,6 +315,23 @@ The assistant uses the `search_code` MCP tool behind the scenes. You can also as
 it to `get_index_status` to check index health, or `clear_index` to start fresh.
 
 </details>
+
+## Supported Clients
+
+Works with any tool that speaks [MCP](https://modelcontextprotocol.io/) (Model Context Protocol):
+
+| Client | Notes |
+|--------|-------|
+| **Claude Code** | Built-in MCP support (best-tested) |
+| **Cursor** | MCP server configuration |
+| **Codex CLI** | MCP server configuration |
+| **Gemini CLI** | MCP server configuration |
+| **VS Code** — Copilot Chat | MCP extension support |
+| **VS Code** — Cline / Roo | MCP server configuration |
+| **VS Code** — Continue | MCP server configuration |
+
+Any tool that speaks MCP can use AGENT Context Local — see
+[docs/MCP_SETUP.md](docs/MCP_SETUP.md) for per-tool setup instructions.
 
 ## How It Works
 
@@ -398,16 +391,9 @@ for queries. Use `get_index_status` to check health. If you need to explore the
 structural neighborhood around a result (parent class, contained methods, inherited
 members), pass the `chunk_id` to `get_graph_context`.
 
-### Graph Retrieval Policy
-
-The project uses a two-tier graph model to balance speed and depth:
-
-- `search_code` **includes lightweight graph enrichment by default** — relationship
-  hints are attached to results (bounded payload, no full expansion). This is enough
-  for most searches.
-- `get_graph_context` is the dedicated deep-traversal tool for when an agent needs
-  the full structural neighborhood around a specific chunk (symbols + edges up to
-  `max_depth`).
+> **Graph enrichment:** `search_code` includes lightweight relationship hints by
+> default (bounded payload, no full expansion). For deep structural traversal, use
+> `get_graph_context` with a `chunk_id` from search results.
 
 ## Recommended: Add to Your Project
 
@@ -444,46 +430,21 @@ support MCP.
 
 ## Supported Languages
 
-The chunker supports 39 file extensions across 29 languages and formats:
+**29 languages, 39 file extensions** — all programming languages use
+tree-sitter for AST-aware parsing.
 
-### Programming Languages (25)
+| Category | Languages |
+|----------|-----------|
+| **Web** | JavaScript, JSX, TypeScript, TSX, HTML, CSS, Svelte, PHP |
+| **Systems** | C, C++, Rust, Go |
+| **JVM** | Java, Kotlin, Scala |
+| **Scripting** | Python, Ruby, Lua, Elixir, Bash/Shell |
+| **Mobile** | Swift, Kotlin |
+| **Other** | C#, SQL, Terraform/HCL, Haskell |
+| **Data/Docs** | YAML, TOML, JSON, Markdown |
 
-- Python (`.py`)
-- JavaScript (`.js`), JSX (`.jsx`), TypeScript (`.ts`), TSX (`.tsx`)
-- Go (`.go`)
-- Rust (`.rs`)
-- Java (`.java`)
-- Kotlin (`.kt`, `.kts`)
-- C (`.c`)
-- C++ (`.cpp`, `.cc`, `.cxx`, `.c++`)
-- C# (`.cs`)
-- Svelte (`.svelte`)
-- Bash / Shell (`.sh`, `.bash`, `.zsh`)
-- HTML (`.html`, `.htm`)
-- CSS (`.css`)
-- Ruby (`.rb`)
-- PHP (`.php`)
-- Swift (`.swift`)
-- SQL (`.sql`)
-- Terraform / HCL (`.tf`, `.tfvars`, `.hcl`)
-- Scala (`.scala`, `.sc`)
-- Lua (`.lua`)
-- Elixir (`.ex`, `.exs`)
-- Haskell (`.hs`)
-
-### Structured Data (3)
-
-- YAML (`.yaml`, `.yml`)
-- TOML (`.toml`)
-- JSON (`.json`)
-
-### Documentation
-
-- Markdown (`.md`)
-
-All programming languages use tree-sitter for AST-aware parsing.
-Structured data files (YAML, TOML, JSON) use a structured key-path parser
-that chunks by top-level sections.
+Structured data files (YAML, TOML, JSON) use a key-path parser that chunks
+by top-level sections rather than AST parsing.
 
 ## System Requirements
 
@@ -605,6 +566,43 @@ To disable: `python scripts/cli.py config reranker off`
 The default reranker (`ms-marco-MiniLM-L-6-v2`) runs on CPU with negligible
 overhead. Larger rerankers (0.6B+) need a GPU for acceptable latency. The
 reranker is entirely optional — search works well without it.
+
+### Idle Memory Management
+
+When the MCP server is running but no queries are active, models can consume
+significant GPU VRAM (or system RAM on CPU installs). A two-tier idle
+management system automatically reclaims memory:
+
+| Tier | Default | What happens | Restore time |
+|------|---------|--------------|--------------|
+| **Warm offload** | 15 min | Models move from GPU → CPU RAM | ~50-100ms |
+| **Cold unload** | 30 min | Models fully destroyed, memory freed | ~5-30s (cold start) |
+
+Thresholds are configurable via CLI args, environment variables, or
+`install_config.json`:
+
+```bash
+# CLI (persists to install_config.json)
+python scripts/cli.py config idle offload 20   # warm offload after 20 min
+python scripts/cli.py config idle unload 45    # cold unload after 45 min
+
+# Environment variables (override install_config.json)
+export CODE_SEARCH_IDLE_OFFLOAD_MINUTES=20
+export CODE_SEARCH_IDLE_UNLOAD_MINUTES=45
+```
+
+Set either value to `0` to disable that tier. The cold threshold must be
+greater than the warm threshold when both are active.
+
+When multiple sources set the same value, precedence is:
+1. CLI args (`--idle-offload`, `--idle-unload`)
+2. Environment variables (`CODE_SEARCH_IDLE_OFFLOAD_MINUTES`, `CODE_SEARCH_IDLE_UNLOAD_MINUTES`)
+3. `install_config.json`
+4. Built-in defaults (15 min warm offload, 30 min cold unload)
+
+Invalid or negative values are ignored with a warning and fall back to the
+built-in defaults. See [docs/MCP_SETUP.md](docs/MCP_SETUP.md#server-configuration)
+for full configuration examples across all supported MCP clients.
 
 ### AMD GPU Support (ROCm)
 
@@ -743,6 +741,8 @@ uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/cli.py 
 | `config model <short-name>` | Switch the active embedding model |
 | `config reranker <on\|off>` | Enable or disable the reranker |
 | `config reranker model <short-name>` | Switch the reranker model |
+| `config idle offload <minutes>` | Set warm GPU-to-CPU offload threshold (0=disable) |
+| `config idle unload <minutes>` | Set cold full-unload threshold (0=disable) |
 
 ## Troubleshooting
 
@@ -777,7 +777,8 @@ Windows PowerShell:
 uv run --directory "$env:LOCALAPPDATA\agent-context-code" python scripts/download_model_standalone.py --storage-dir "$env:USERPROFILE\.agent_code_search" --model "mixedbread-ai/mxbai-embed-xsmall-v1" -v
 ```
 
-### For AI agents debugging MCP issues
+<details>
+<summary>For AI agents debugging MCP issues</summary>
 
 If you're an AI agent and code search tools aren't working:
 
@@ -790,6 +791,8 @@ If you're an AI agent and code search tools aren't working:
 4. If the index seems empty, run `index_directory` on the project path to rebuild it.
 5. Use `get_index_status` to check if the current project has an index and how many
    chunks it contains.
+
+</details>
 
 ### WSL2 notes
 
@@ -854,18 +857,14 @@ Or if you have a local clone:
 - **uv**, **Python**, **git** — these are shared system tools
 - Any project source code you indexed (only the index is removed, not your code)
 
-## Repository
-
-Canonical public repo:
-[tlines2016/agent-context-code](https://github.com/tlines2016/agent-context-code)
-
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgements
 
-This project was originally inspired by the foundational concepts of
-claude-context-local. It has since been reworked into a standalone tool
-supporting agent-agnostic workflows, a dedicated vector database, hybrid
-search, reranking, and local embedding models.
+Built with [tree-sitter](https://tree-sitter.github.io/) for parsing,
+[LanceDB](https://lancedb.github.io/lancedb/) for vector storage,
+[sentence-transformers](https://www.sbert.net/) for embeddings, and the
+[Model Context Protocol](https://modelcontextprotocol.io/) for AI assistant
+integration.

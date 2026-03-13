@@ -21,6 +21,12 @@ GitHub: <https://github.com/tlines2016/agent-context-code>
   - [OpenCode](#opencode)
   - [Cline (VS Code)](#cline-vs-code)
   - [Roo Code (VS Code)](#roo-code-vs-code)
+- [Cline CLI](#cline-cli)
+  - [Roo CLI](#roo-cli)
+- [Server Configuration](#server-configuration)
+  - [Idle Memory Management](#idle-memory-management)
+  - [Configuration via CLI Args](#configuration-via-cli-args)
+  - [Configuration via Environment Variables](#configuration-via-environment-variables)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -607,6 +613,276 @@ the VS Code window.
 
 ---
 
+### Cline CLI
+
+Cline is also available as a standalone CLI tool (outside VS Code). It reads
+MCP configuration from `~/.cline/mcp_settings.json`.
+
+**PyPI install:**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp"
+    }
+  }
+}
+```
+
+**Source checkout (macOS / Linux):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "uv",
+      "args": [
+        "run", "--directory",
+        "~/.local/share/agent-context-code",
+        "python", "mcp_server/server.py"
+      ]
+    }
+  }
+}
+```
+
+**Source checkout (Windows):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "uv",
+      "args": [
+        "run", "--directory",
+        "%LOCALAPPDATA%\\agent-context-code",
+        "python", "mcp_server/server.py"
+      ]
+    }
+  }
+}
+```
+
+---
+
+### Roo CLI
+
+Roo Code also ships a standalone CLI. It reads MCP configuration from
+`~/.roo/mcp_settings.json`.
+
+**PyPI install:**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp"
+    }
+  }
+}
+```
+
+**Source checkout (macOS / Linux):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "uv",
+      "args": [
+        "run", "--directory",
+        "~/.local/share/agent-context-code",
+        "python", "mcp_server/server.py"
+      ]
+    }
+  }
+}
+```
+
+**Source checkout (Windows):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "uv",
+      "args": [
+        "run", "--directory",
+        "%LOCALAPPDATA%\\agent-context-code",
+        "python", "mcp_server/server.py"
+      ]
+    }
+  }
+}
+```
+
+---
+
+## Server Configuration
+
+### Idle Memory Management
+
+The MCP server includes a two-tier idle memory management system that
+automatically reclaims GPU VRAM (and system RAM) when the server is idle:
+
+| Tier | Default | Behavior | Restore time |
+|------|---------|----------|--------------|
+| **Warm offload** | 15 min | Models move from GPU to CPU RAM | ~50-100ms |
+| **Cold unload** | 30 min | Models fully destroyed, memory freed | ~5-30s (cold start) |
+
+After warm offload, models stay in system RAM for fast restore. After cold
+unload, the next query triggers a full model reload from the local disk cache.
+
+Both tiers are **enabled by default**. Set a tier's value to `0` to disable
+it. When both are active, the cold threshold must be greater than the warm
+threshold.
+
+### Configuration via CLI Args
+
+The easiest way to customize idle thresholds is to pass `--idle-offload` and
+`--idle-unload` as server arguments. These appear in the `"args"` field of
+your MCP client config.
+
+**Claude Code (PyPI):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp",
+      "args": ["--idle-offload", "20", "--idle-unload", "45"]
+    }
+  }
+}
+```
+
+**Cursor / Cline / Roo Code (PyPI):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp",
+      "args": ["--idle-offload", "20", "--idle-unload", "45"],
+      "disabled": false
+    }
+  }
+}
+```
+
+**GitHub Copilot CLI (PyPI):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp",
+      "args": ["--idle-offload", "20", "--idle-unload", "45"]
+    }
+  }
+}
+```
+
+**OpenAI Codex CLI (PyPI):**
+
+```toml
+[mcp_servers.code-search]
+command = "agent-context-local-mcp"
+args = ["--idle-offload", "20", "--idle-unload", "45"]
+```
+
+**Gemini CLI (PyPI):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp",
+      "args": ["--idle-offload", "20", "--idle-unload", "45"]
+    }
+  }
+}
+```
+
+**Source checkout example (macOS / Linux):**
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "uv",
+      "args": [
+        "run", "--directory",
+        "~/.local/share/agent-context-code",
+        "python", "mcp_server/server.py",
+        "--idle-offload", "20",
+        "--idle-unload", "45"
+      ]
+    }
+  }
+}
+```
+
+### Configuration via install_config.json
+
+Idle thresholds can also be set persistently using the CLI tool:
+
+```bash
+# Set warm CPU offload to 20 minutes
+python scripts/cli.py config idle offload 20
+
+# Set cold full unload to 45 minutes
+python scripts/cli.py config idle unload 45
+
+# Disable warm offload (only cold unload remains)
+python scripts/cli.py config idle offload 0
+```
+
+These values are stored in `~/.agent_code_search/install_config.json` and
+apply to all future server starts.
+
+### Configuration via Environment Variables
+
+Environment variables override `install_config.json` when no idle CLI args are
+provided:
+
+```bash
+export CODE_SEARCH_IDLE_OFFLOAD_MINUTES=20   # warm offload after 20 min
+export CODE_SEARCH_IDLE_UNLOAD_MINUTES=45    # cold unload after 45 min
+```
+
+You can also pass these via the `"env"` field in your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "agent-context-local-mcp",
+      "env": {
+        "CODE_SEARCH_IDLE_OFFLOAD_MINUTES": "20",
+        "CODE_SEARCH_IDLE_UNLOAD_MINUTES": "45"
+      }
+    }
+  }
+}
+```
+
+### Configuration Priority
+
+When multiple sources set the same value, the server resolves them in this
+order (highest priority first):
+
+1. **CLI args** (`--idle-offload`, `--idle-unload`)
+2. **Environment variable** (`CODE_SEARCH_IDLE_OFFLOAD_MINUTES`, `CODE_SEARCH_IDLE_UNLOAD_MINUTES`)
+3. **install_config.json** (`idle_offload_minutes`, `idle_unload_minutes`)
+4. **Hardcoded default** (15 min offload, 30 min unload)
+
+Invalid or negative values are ignored with a warning and fall back to the
+hardcoded defaults.
+
+---
+
 ## Troubleshooting
 
 ### `uv: command not found`
@@ -727,6 +1003,6 @@ agent-context-local-mcp   # first run triggers download
 uv run --directory ~/.local/share/agent-context-code python scripts/cli.py setup-guide
 ```
 
-The default model (`Qwen/Qwen3-Embedding-0.6B`) is not gated and will download
-automatically on first use. If you are behind a corporate proxy, ensure
+The default model (`mixedbread-ai/mxbai-embed-xsmall-v1`) is not gated and will
+download automatically on first use. If you are behind a corporate proxy, ensure
 `HTTPS_PROXY` is set in your environment.

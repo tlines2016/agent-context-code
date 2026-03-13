@@ -19,6 +19,7 @@ from common_utils import (
     load_reranker_config,
     normalize_path,
     save_local_install_config,
+    save_idle_config,
     save_reranker_config,
 )
 
@@ -245,3 +246,25 @@ class TestRerankerConfig:
         assert loaded["enabled"] is True
         assert loaded["recall_k"] == 75
         assert loaded["min_reranker_score"] == pytest.approx(0.2)
+
+
+class TestIdleConfig:
+    """Tests for save_idle_config validation and persistence."""
+
+    def test_save_idle_config_persists_values(self, tmp_path):
+        save_idle_config(
+            idle_offload_minutes=20,
+            idle_unload_minutes=45,
+            storage_dir=tmp_path,
+        )
+        data = json.loads((tmp_path / "install_config.json").read_text(encoding="utf-8"))
+        assert data["idle_offload_minutes"] == 20
+        assert data["idle_unload_minutes"] == 45
+
+    def test_save_idle_config_rejects_negative_values(self, tmp_path):
+        with pytest.raises(ValueError):
+            save_idle_config(idle_offload_minutes=-1, storage_dir=tmp_path)
+
+    def test_save_idle_config_rejects_non_integer_values(self, tmp_path):
+        with pytest.raises(ValueError):
+            save_idle_config(idle_unload_minutes="abc", storage_dir=tmp_path)  # type: ignore[arg-type]

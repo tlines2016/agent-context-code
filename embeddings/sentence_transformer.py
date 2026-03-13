@@ -121,18 +121,32 @@ class SentenceTransformerModel(EmbeddingModel):
         }
 
     def cleanup(self):
-        """Clean up model resources."""
+        """Clean up model resources.
+
+        Clears the ``@cached_property`` entry so the model object can be
+        garbage-collected.  A subsequent access to ``self.model`` will
+        trigger a full reload from the on-disk cache.
+        """
         if not self._model_loaded:
             return
 
         try:
-            model = self.model
-            model.to('cpu')
+            self.model.to('cpu')
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
-            del model
+            # Clear the @cached_property entry so the model is released.
+            # ``del self.model`` would call __delattr__ which removes the
+            # instance dict entry, allowing the descriptor to re-trigger
+            # on next access.
+            try:
+                del self.__dict__['model']
+            except KeyError:
+                pass
+            self._model_loaded = False
             self._logger.info("Model cleaned up and memory freed")
         except Exception as e:
             self._logger.warning(f"Error during model cleanup: {e}")

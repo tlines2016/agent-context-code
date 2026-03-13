@@ -111,7 +111,26 @@ def main():
         action="store_true",
         help="Enable DEBUG-level logging (overrides AGENT_CONTEXT_LOG_LEVEL)"
     )
+    parser.add_argument(
+        "--idle-offload",
+        type=int,
+        metavar="MINUTES",
+        help="Warm GPU→CPU offload after N idle minutes (0=disable, default: 15)"
+    )
+    parser.add_argument(
+        "--idle-unload",
+        type=int,
+        metavar="MINUTES",
+        help="Cold full unload after N idle minutes (0=disable, default: 30)"
+    )
     args = parser.parse_args()
+
+    # CLI flags set the env vars so the existing config resolution picks them up
+    # with highest priority (env var > install_config.json > hardcoded default).
+    if args.idle_offload is not None:
+        os.environ["CODE_SEARCH_IDLE_OFFLOAD_MINUTES"] = str(args.idle_offload)
+    if args.idle_unload is not None:
+        os.environ["CODE_SEARCH_IDLE_UNLOAD_MINUTES"] = str(args.idle_unload)
 
     _configure_logging(verbose=args.verbose)
     logger = logging.getLogger(__name__)

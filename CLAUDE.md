@@ -2,8 +2,6 @@
 
 Claude Code working guide for this repository.
 
-IMPORTANT: This tool is now available in your MCP Toolkit, even though it's in QA, please utilize the tool to help assist you in navigating the codebase.
-
 ## Project Identity
 
 - Product direction: **AGENT Context Local**

@@ -487,3 +487,120 @@ class TestCleanup:
             reranker.cleanup()
         info = reranker.get_model_info()
         assert info["loaded"] is False
+
+
+# ---------------------------------------------------------------------------
+# Batch GPU cleanup (_score_causal_lm)
+# ---------------------------------------------------------------------------
+
+class TestCausalLmBatchCleanup:
+    """_score_causal_lm must call _release_gpu_cache after scoring."""
+
+    def test_release_gpu_cache_called_after_scoring(self):
+        """_release_gpu_cache fires exactly once per _score_causal_lm call."""
+        pytest.importorskip("torch")
+        import torch
+
+        reranker = _make_loaded_reranker(yes_id=1, no_id=0)
+        logits = torch.zeros(2, 1, 10)
+        mock_outputs = MagicMock()
+        mock_outputs.logits = logits
+        reranker._model.return_value = mock_outputs
+
+        mock_inputs = MagicMock()
+        mock_inputs.to.return_value = mock_inputs
+        reranker._tokenizer.return_value = mock_inputs
+
+        with patch.object(reranker, "_release_gpu_cache") as mock_release:
+            reranker._score_causal_lm("query", _make_passages(2))
+
+        mock_release.assert_called_once()
+
+    def test_release_gpu_cache_called_even_on_error(self):
+        """_release_gpu_cache must fire in the finally block even if scoring raises."""
+        pytest.importorskip("torch")
+
+        reranker = _make_loaded_reranker(yes_id=1, no_id=0)
+
+        # Make tokenizer work but model forward raise
+        mock_inputs = MagicMock()
+        mock_inputs.to.return_value = mock_inputs
+        reranker._tokenizer.return_value = mock_inputs
+        reranker._model.side_effect = RuntimeError("boom")
+
+        with patch.object(reranker, "_release_gpu_cache") as mock_release:
+            with pytest.raises(RuntimeError, match="boom"):
+                reranker._score_causal_lm("query", _make_passages(1))
+
+        mock_release.assert_called_once()
+
+    def test_release_gpu_cache_calls_gc_collect_on_gpu(self):
+        """_release_gpu_cache must call gc.collect() when a GPU is available."""
+        pytest.importorskip("torch")
+        reranker = _make_loaded_reranker()
+        with patch("gc.collect") as mock_gc, \
+             patch("torch.cuda.is_available", return_value=True), \
+             patch("torch.cuda.empty_cache"):
+            reranker._release_gpu_cache()
+        mock_gc.assert_called_once()
+
+    def test_release_gpu_cache_skips_gc_on_cpu_only(self):
+        """On CPU-only, _release_gpu_cache is a no-op (no gc.collect overhead)."""
+        pytest.importorskip("torch")
+        reranker = _make_loaded_reranker()
+        with patch("gc.collect") as mock_gc, \
+             patch("torch.cuda.is_available", return_value=False), \
+             patch("torch.backends.mps", create=True) as mock_mps:
+            mock_mps.is_available.return_value = False
+            reranker._release_gpu_cache()
+        mock_gc.assert_not_called()
+
+    def test_release_gpu_cache_cuda_backend(self):
+        """On CUDA, _release_gpu_cache calls torch.cuda.empty_cache."""
+        pytest.importorskip("torch")
+        reranker = _make_loaded_reranker()
+        with patch("gc.collect"), \
+             patch("torch.cuda.is_available", return_value=True), \
+             patch("torch.cuda.empty_cache") as mock_empty:
+            reranker._release_gpu_cache()
+        mock_empty.assert_called_once()
+
+    def test_release_gpu_cache_mps_backend(self):
+        """On MPS, _release_gpu_cache calls torch.mps.empty_cache."""
+        pytest.importorskip("torch")
+        reranker = _make_loaded_reranker()
+        with patch("gc.collect"), \
+             patch("torch.cuda.is_available", return_value=False), \
+             patch("torch.mps.empty_cache", create=True) as mock_empty, \
+             patch("torch.backends.mps", create=True) as mock_mps:
+            mock_mps.is_available.return_value = True
+            reranker._release_gpu_cache()
+        mock_empty.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Offload / restore
+# ---------------------------------------------------------------------------
+
+class TestOffloadRestore:
+    """offload_to_cpu / restore_to_device lifecycle."""
+
+    def test_offload_moves_model_to_cpu(self):
+        reranker = _make_loaded_reranker()
+        with patch.object(reranker, "_release_gpu_cache"):
+            reranker.offload_to_cpu()
+        reranker._model.to.assert_called_with("cpu")
+
+    def test_offload_noop_when_not_loaded(self):
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="cpu")
+        reranker.offload_to_cpu()  # should not raise
+
+    def test_restore_moves_model_to_resolved_device(self):
+        reranker = _make_loaded_reranker()
+        with patch.object(reranker, "_resolve_device", return_value="cuda"):
+            reranker.restore_to_device()
+        reranker._model.to.assert_called_with("cuda")
+
+    def test_restore_noop_when_not_loaded(self):
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="cpu")
+        reranker.restore_to_device()  # should not raise
