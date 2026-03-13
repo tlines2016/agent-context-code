@@ -310,6 +310,37 @@ class TestRerankerIntegration:
         s = IntelligentSearcher(im, embedder, reranker=mock_reranker, reranker_recall_k=20)
         s.search("query", k=1)
         mock_reranker.rerank.assert_called_once()
+        _, kwargs = mock_reranker.rerank.call_args
+        assert kwargs["top_k"] == 1
+        assert kwargs["min_score"] == pytest.approx(0.0)
+
+    def test_custom_min_reranker_score_is_forwarded(self):
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.8, self._full_meta("c0")),
+        ]
+        im.get_similar_chunks.return_value = []
+        im.get_file_chunk_count.return_value = 0
+
+        embedder = _make_mock_embedder()
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            ("c0", 0.95, {
+                **self._full_meta("c0"),
+                "reranked": True,
+                "vector_similarity": 0.8,
+            }),
+        ]
+
+        s = IntelligentSearcher(
+            im,
+            embedder,
+            reranker=mock_reranker,
+            min_reranker_score=0.75,
+        )
+        s.search("query", k=2)
+        _, kwargs = mock_reranker.rerank.call_args
+        assert kwargs["min_score"] == pytest.approx(0.75)
 
     def test_fallback_to_vector_scores_when_reranker_raises(self):
         im = _make_mock_index_manager()
@@ -347,6 +378,37 @@ class TestRerankerIntegration:
         results = s.search("query", k=1, context_depth=0)
         assert len(results) == 1
         assert results[0].similarity_score == pytest.approx(0.8)
+
+    def test_reranker_threshold_can_return_fewer_than_k_results(self):
+        im = _make_mock_index_manager()
+        im.search.return_value = [
+            ("c0", 0.91, self._full_meta("c0")),
+            ("c1", 0.74, self._full_meta("c1")),
+            ("c2", 0.53, self._full_meta("c2")),
+            ("c3", 0.31, self._full_meta("c3")),
+        ]
+        im.get_similar_chunks.return_value = []
+        im.get_file_chunk_count.return_value = 0
+
+        embedder = _make_mock_embedder()
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            ("c1", 0.86, {
+                **self._full_meta("c1"),
+                "reranked": True,
+                "vector_similarity": 0.74,
+            }),
+        ]
+
+        s = IntelligentSearcher(
+            im,
+            embedder,
+            reranker=mock_reranker,
+            min_reranker_score=0.8,
+        )
+        results = s.search("query", k=3, context_depth=0)
+        assert len(results) == 1
+        assert results[0].chunk_id == "c1"
 
 
 # ---------------------------------------------------------------------------

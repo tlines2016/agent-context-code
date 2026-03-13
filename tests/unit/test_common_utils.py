@@ -157,6 +157,13 @@ class TestRerankerConfig:
         config = load_reranker_config(storage_dir=tmp_path)
         assert config == {}
 
+    def test_load_reranker_config_returns_empty_for_non_object_section(self, tmp_path):
+        """Malformed reranker values (non-dict) should safely normalize to {}."""
+        config_path = tmp_path / "install_config.json"
+        config_path.write_text(json.dumps({"reranker": "invalid"}), encoding="utf-8")
+        config = load_reranker_config(storage_dir=tmp_path)
+        assert config == {}
+
     def test_load_reranker_config_reads_reranker_section(self, tmp_path):
         """Should return the reranker section when present."""
         reranker_data = {"model_name": "Qwen/Qwen3-Reranker-4B", "enabled": True}
@@ -177,6 +184,7 @@ class TestRerankerConfig:
         assert data["reranker"]["model_name"] == "Qwen/Qwen3-Reranker-4B"
         assert data["reranker"]["enabled"] is True
         assert data["reranker"]["recall_k"] == 100
+        assert data["reranker"]["min_reranker_score"] == pytest.approx(0.0)
 
     def test_save_reranker_config_defaults(self, tmp_path):
         """save_reranker_config should use correct defaults."""
@@ -185,6 +193,30 @@ class TestRerankerConfig:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         assert data["reranker"]["enabled"] is False
         assert data["reranker"]["recall_k"] == 50
+        assert data["reranker"]["min_reranker_score"] == pytest.approx(0.0)
+
+    def test_save_reranker_config_persists_min_reranker_score(self, tmp_path):
+        """save_reranker_config should persist min_reranker_score when provided."""
+        save_reranker_config(
+            "Qwen/Qwen3-Reranker-4B",
+            enabled=True,
+            recall_k=50,
+            min_reranker_score=0.35,
+            storage_dir=tmp_path,
+        )
+        config_path = tmp_path / "install_config.json"
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        assert data["reranker"]["min_reranker_score"] == pytest.approx(0.35)
+
+    def test_save_reranker_config_positional_storage_dir_is_backward_compatible(self, tmp_path):
+        """Legacy 4th positional arg should still map to storage_dir."""
+        save_reranker_config("Qwen/Qwen3-Reranker-4B", True, 42, tmp_path)
+        config_path = tmp_path / "install_config.json"
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        assert data["reranker"]["model_name"] == "Qwen/Qwen3-Reranker-4B"
+        assert data["reranker"]["enabled"] is True
+        assert data["reranker"]["recall_k"] == 42
+        assert data["reranker"]["min_reranker_score"] == pytest.approx(0.0)
 
     def test_save_reranker_config_preserves_embedding_config(self, tmp_path):
         """save_reranker_config should not overwrite embedding_model."""
@@ -202,9 +234,14 @@ class TestRerankerConfig:
     def test_roundtrip_save_then_load_reranker(self, tmp_path):
         """Saving and loading reranker config should produce identical data."""
         save_reranker_config(
-            "Qwen/Qwen3-Reranker-4B", enabled=True, recall_k=75, storage_dir=tmp_path
+            "Qwen/Qwen3-Reranker-4B",
+            enabled=True,
+            recall_k=75,
+            min_reranker_score=0.2,
+            storage_dir=tmp_path,
         )
         loaded = load_reranker_config(storage_dir=tmp_path)
         assert loaded["model_name"] == "Qwen/Qwen3-Reranker-4B"
         assert loaded["enabled"] is True
         assert loaded["recall_k"] == 75
+        assert loaded["min_reranker_score"] == pytest.approx(0.2)

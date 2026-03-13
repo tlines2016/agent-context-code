@@ -26,11 +26,13 @@ Deduplication, score transparency, and the strings.yaml update. All additive.
 - **2** ✅: Surface `vector_score` in output — `search/searcher.py` (`_create_search_result` threads `reranked`/`vector_similarity` from metadata into `context_info`), `mcp_server/code_search_server.py` (`_format_result` surfaces `vector_score` when reranked). Tests: 4 new tests in `TestRerankerMetadataThreading` and `TestFormatResultVectorScore`.
 - **5** ✅: Score hint + chunk_type tip — `mcp_server/strings.yaml` (one appended line to `search_code` description)
 
-### Group 3 — Min score threshold (Task 3)
-Standalone: modifies `reranking/reranker.py` (`rerank()`) and `search/searcher.py`
-(`__init__`, `_semantic_search`). Kept separate from Group 4 because it changes the
-`rerank()` signature — Group 4 also touches `reranker.py` and should see the final
-Group 3 state.
+### Group 3 — Min score threshold (Task 3) ✅ COMPLETED
+Implemented as a standalone change in `reranking/reranker.py` (`rerank()`) and
+`search/searcher.py` (`__init__`, `_semantic_search`). Added targeted tests in
+`tests/unit/test_reranker.py` and `tests/unit/test_searcher.py`. Behavior note:
+strict thresholds intentionally may return fewer than `k` results. Follow-up
+plumbing now persists `min_reranker_score` in install config and threads it via
+`CodeSearchServer` into `IntelligentSearcher` with defensive sanitization.
 
 ### Group 4 — GPU memory hygiene (Task 4)
 Implement last. Agent must apply two corrections from the technical review before
@@ -194,11 +196,24 @@ This is the minimal, non-confusing version: `score` stays as the primary sort ke
 
 ---
 
-## Task 3 — Configurable Minimum Reranker Score Threshold
+## Task 3 — Configurable Minimum Reranker Score Threshold ✅ COMPLETED
 
 **Evaluation finding:** §4 Finding 2 — High-confidence false positives
-**Files:** `reranking/reranker.py`, `mcp_server/code_search_server.py`
+**Files:** `reranking/reranker.py`, `search/searcher.py`, `common_utils.py`,
+`mcp_server/code_search_server.py`, `scripts/cli.py`
 **Risk:** Low-medium. Default 0.0 = no behavior change. Must handle k starvation.
+**Status:** Implemented. Added `min_score: float = 0.0` to `CodeReranker.rerank()` and
+applied threshold filtering after score sort and before `top_k` truncation. Added
+`min_reranker_score: float = 0.0` to `IntelligentSearcher.__init__()` and forwarded it
+to reranker calls in `_semantic_search()`. Follow-up completed config plumbing:
+`save_reranker_config()` now persists `reranker.min_reranker_score` (default `0.0`),
+CLI reranker config rewrite paths preserve this field, and `CodeSearchServer`
+sanitizes malformed values (missing/invalid -> `0.0`, negative -> `0.0`) before
+passing to `IntelligentSearcher` in both `get_searcher()` and `_search_project()`.
+Added unit tests covering persistence, backward compatibility, and server-level
+plumbing of configured thresholds.
+Verification: `test_common_utils` (25 passed), `test_searcher` (55 passed),
+`test_code_search_server` (38 passed), and `test_plan_regressions` (24 passed).
 
 ### Motivation
 

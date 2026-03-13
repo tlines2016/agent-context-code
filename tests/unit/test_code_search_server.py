@@ -72,6 +72,109 @@ def _fake_search_result(
 
 
 # ---------------------------------------------------------------------------
+# Reranker threshold plumbing
+# ---------------------------------------------------------------------------
+
+class TestRerankerThresholdPlumbing:
+    def test_get_searcher_passes_min_reranker_score_from_config(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 77,
+                 "min_reranker_score": 0.42,
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            result = server.get_searcher("/some/project")
+
+        assert result is mock_searcher
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["reranker_recall_k"] == 77
+        assert kwargs["min_reranker_score"] == pytest.approx(0.42)
+
+    def test_get_searcher_sanitizes_invalid_min_reranker_score(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": "invalid",
+                 "min_reranker_score": -3,
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            server.get_searcher("/some/project")
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["reranker_recall_k"] == 50
+        assert kwargs["min_reranker_score"] == pytest.approx(0.0)
+
+    def test_get_searcher_clamps_high_min_reranker_score_to_one(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 50,
+                 "min_reranker_score": 1.7,
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            server.get_searcher("/some/project")
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["min_reranker_score"] == pytest.approx(1.0)
+
+    def test_get_searcher_sanitizes_non_finite_min_reranker_score(self, server):
+        mock_searcher = MagicMock()
+
+        with patch.object(server, "get_index_manager", return_value=MagicMock()), \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 50,
+                 "min_reranker_score": float("nan"),
+             }), \
+             patch("mcp_server.code_search_server.IntelligentSearcher", return_value=mock_searcher) as searcher_cls:
+            server.get_searcher("/some/project")
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["min_reranker_score"] == pytest.approx(0.0)
+
+    def test_search_project_passes_min_reranker_score_from_config(self, server, tmp_path):
+        target = tmp_path / "target_project"
+        target.mkdir()
+        idx_root = tmp_path / "idx_root"
+        (idx_root / "index").mkdir(parents=True)
+
+        mock_index_manager = MagicMock()
+        mock_index_manager.get_index_size.return_value = 100
+        mock_searcher = MagicMock()
+        mock_searcher.search.return_value = []
+
+        with patch.object(server, "_project_storage_dir", return_value=idx_root), \
+             patch("mcp_server.code_search_server.CodeIndexManager", return_value=mock_index_manager), \
+             patch("search.searcher.IntelligentSearcher", return_value=mock_searcher) as searcher_cls, \
+             patch.object(server, "embedder", return_value=MagicMock()), \
+             patch.object(server, "reranker", return_value=None), \
+             patch("mcp_server.code_search_server.load_reranker_config", return_value={
+                 "recall_k": 30,
+                 "min_reranker_score": 0.6,
+             }), \
+             patch.object(server, "_open_transient_graph", return_value=None):
+            result = json.loads(
+                server.search_code("query", project_path=str(target), auto_reindex=False)
+            )
+
+        _, kwargs = searcher_cls.call_args
+        assert kwargs["reranker_recall_k"] == 30
+        assert kwargs["min_reranker_score"] == pytest.approx(0.6)
+        assert "error" not in result
+
+
+# ---------------------------------------------------------------------------
 # Input validation — query
 # ---------------------------------------------------------------------------
 

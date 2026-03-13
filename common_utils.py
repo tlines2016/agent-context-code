@@ -377,7 +377,10 @@ def load_reranker_config(storage_dir: Optional[Path] = None) -> Dict[str, Any]:
     cannot be read.  This mirrors the load_local_install_config pattern.
     """
     config = load_local_install_config(storage_dir)
-    return config.get("reranker", {})
+    reranker_config = config.get("reranker", {})
+    # Older or manually edited configs may contain a non-dict "reranker"
+    # value; normalize to {} so downstream .get() callers remain safe.
+    return reranker_config if isinstance(reranker_config, dict) else {}
 
 
 def save_reranker_config(
@@ -385,6 +388,7 @@ def save_reranker_config(
     enabled: bool = False,
     recall_k: int = 50,
     storage_dir: Optional[Path] = None,
+    min_reranker_score: float = 0.0,
 ) -> Path:
     """Persist reranker configuration into install_config.json.
 
@@ -401,6 +405,7 @@ def save_reranker_config(
         "model_name": model_name,
         "enabled": enabled,
         "recall_k": recall_k,
+        "min_reranker_score": min_reranker_score,
     }
 
     config_path = get_install_config_path(target_storage_dir)

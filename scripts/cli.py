@@ -340,7 +340,7 @@ def cmd_help() -> None:
         ("models active", "Show currently configured models"),
         ("models install", "Download a model by short name"),
         ("config model", "Switch the active embedding model"),
-        ("config reranker", "Toggle reranker on/off (or set model)"),
+        ("config reranker", "Toggle reranker, set model, or min-score"),
     ]
     for name, desc in cmds:
         print(f"  {cyan(name):<20s} {desc}")
@@ -1400,7 +1400,11 @@ def cmd_models_active() -> None:
         rr_name = reranker_cfg.get("model_name", "unknown")
         status = green("enabled") if enabled else yellow("disabled")
         recall_k = reranker_cfg.get("recall_k", 50)
-        print(f"  Reranker:   {rr_name} [{status}] (recall_k={recall_k})")
+        min_reranker_score = reranker_cfg.get("min_reranker_score", 0.0)
+        print(
+            f"  Reranker:   {rr_name} [{status}] "
+            f"(recall_k={recall_k}, min_score={min_reranker_score})"
+        )
     else:
         print(f"  Reranker:   {yellow('not configured')}")
 
@@ -1440,19 +1444,37 @@ def cmd_config() -> None:
     """Dispatch ``config <subcommand>``."""
     args = sys.argv[2:]
     if not args:
-        print(red("Usage: config model <short-name>  |  config reranker <on|off>  |  config reranker model <short-name>"))
+        print(
+            red(
+                "Usage: config model <short-name>  |  "
+                "config reranker <on|off>  |  "
+                "config reranker model <short-name>  |  "
+                "config reranker min-score <0.0-1.0>"
+            )
+        )
         sys.exit(1)
 
     sub = args[0].lower()
     if sub == "reranker":
         if len(args) < 2:
-            print(red("Usage: config reranker <on|off>  OR  config reranker model <short-name>"))
+            print(
+                red(
+                    "Usage: config reranker <on|off>  OR  "
+                    "config reranker model <short-name>  OR  "
+                    "config reranker min-score <0.0-1.0>"
+                )
+            )
             sys.exit(1)
         if args[1].lower() == "model":
             if len(args) < 3:
                 print(red("Usage: config reranker model <short-name>"))
                 sys.exit(1)
             cmd_config_reranker_model(args[2])
+        elif args[1].lower() in ("min-score", "min_score", "threshold"):
+            if len(args) < 3:
+                print(red("Usage: config reranker min-score <0.0-1.0>"))
+                sys.exit(1)
+            cmd_config_reranker_min_score(args[2])
         else:
             cmd_config_reranker(args[1])
     elif sub == "model":
@@ -1479,16 +1501,19 @@ def cmd_config_reranker(state: str) -> None:
         print(red(f"Invalid state: '{state}'. Use 'on' or 'off'."))
         sys.exit(1)
 
-    # Read existing reranker config to preserve model_name and recall_k
+    # Read existing reranker config to preserve model_name, recall_k, and
+    # min_reranker_score across enable/disable toggles.
     from reranking.reranker_catalog import DEFAULT_RERANKER_MODEL
     existing = load_reranker_config(storage_dir=storage)
     model_name = existing.get("model_name", DEFAULT_RERANKER_MODEL)
     recall_k = existing.get("recall_k", 50)
+    min_reranker_score = existing.get("min_reranker_score", 0.0)
 
     save_reranker_config(
         model_name=model_name,
         enabled=enabled,
         recall_k=recall_k,
+        min_reranker_score=min_reranker_score,
         storage_dir=storage,
     )
 
@@ -1552,15 +1577,61 @@ def cmd_config_reranker_model(short_name: str) -> None:
         print(f"Run '{cyan(_cmd_prefix())} models list' to see available reranker models.")
         sys.exit(1)
 
-    # Preserve enabled state and recall_k
+    # Preserve enabled state, recall_k, and min_reranker_score.
     existing = load_reranker_config(storage_dir=storage)
     enabled = existing.get("enabled", False)
     recall_k = existing.get("recall_k", 50)
+    min_reranker_score = existing.get("min_reranker_score", 0.0)
 
-    save_reranker_config(model_name=full_name, enabled=enabled, recall_k=recall_k, storage_dir=storage)
+    save_reranker_config(
+        model_name=full_name,
+        enabled=enabled,
+        recall_k=recall_k,
+        min_reranker_score=min_reranker_score,
+        storage_dir=storage,
+    )
     status = green("enabled") if enabled else yellow("disabled")
     print(f"Reranker model set to: {green(full_name)} [{status}]")
     print(f"Restart the MCP server for the change to take effect.")
+
+
+def cmd_config_reranker_min_score(raw_value: str) -> None:
+    """Set reranker min score threshold in install_config.json."""
+    from reranking.reranker_catalog import DEFAULT_RERANKER_MODEL
+
+    storage = _get_storage_dir_or_report("config reranker min-score")
+    if storage is None:
+        return
+
+    try:
+        min_reranker_score = float(raw_value)
+    except ValueError:
+        print(red(f"Invalid min-score: '{raw_value}'. Expected a number between 0.0 and 1.0."))
+        sys.exit(1)
+
+    if not 0.0 <= min_reranker_score <= 1.0:
+        print(red(f"Invalid min-score: {min_reranker_score}. Use a value between 0.0 and 1.0."))
+        sys.exit(1)
+
+    existing = load_reranker_config(storage_dir=storage)
+    model_name = existing.get("model_name", DEFAULT_RERANKER_MODEL)
+    enabled = existing.get("enabled", False)
+    recall_k = existing.get("recall_k", 50)
+
+    save_reranker_config(
+        model_name=model_name,
+        enabled=enabled,
+        recall_k=recall_k,
+        min_reranker_score=min_reranker_score,
+        storage_dir=storage,
+    )
+
+    status = green("enabled") if enabled else yellow("disabled")
+    print(
+        f"Reranker min-score set to: {green(str(min_reranker_score))} "
+        f"(model: {model_name}, {status}, recall_k={recall_k})"
+    )
+    print("Restart the MCP server for the change to take effect.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────
@@ -1594,6 +1665,7 @@ def _suggest_command(unknown: str) -> str:
         "setup_guide": "setup-guide",
         "model": "models",
         "reranker": "config reranker <on|off>",
+        "threshold": "config reranker min-score <0.0-1.0>",
         "install": "models install <short-name>",
         "list": "models list",
         "active": "models active",

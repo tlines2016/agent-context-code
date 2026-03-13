@@ -172,6 +172,16 @@ uv run python scripts/cli.py config reranker model qwen-reranker-4b
 ```
 > Restart the MCP server for the change to take effect.
 
+### `config reranker min-score <0.0-1.0>`
+Set the minimum reranker score threshold used to filter reranked candidates before final top-k truncation.
+`0.0` disables filtering (default). Higher values are stricter and may return fewer than `k` results.
+```powershell
+uv run python scripts/cli.py config reranker min-score 0.0
+uv run python scripts/cli.py config reranker min-score 0.1
+uv run python scripts/cli.py config reranker min-score 0.25
+```
+> Restart the MCP server for the change to take effect.
+
 ---
 
 ## Common Workflows
@@ -214,6 +224,7 @@ uv run python scripts/cli.py config reranker on
 uv run python scripts/cli.py models install qwen-reranker-0.6b
 uv run python scripts/cli.py config reranker on
 uv run python scripts/cli.py config reranker model qwen-reranker-0.6b
+uv run python scripts/cli.py config reranker min-score 0.1
 ```
 
 ### Enable GPU acceleration

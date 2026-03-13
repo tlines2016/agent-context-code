@@ -42,11 +42,13 @@ class IntelligentSearcher:
         embedder: CodeEmbedder,
         reranker: Optional["CodeReranker"] = None,
         reranker_recall_k: int = 50,
+        min_reranker_score: float = 0.0,
     ):
         self.index_manager = index_manager
         self.embedder = embedder
         self._reranker = reranker
         self._reranker_recall_k = reranker_recall_k
+        self._min_reranker_score = min_reranker_score
         self._logger = logging.getLogger(__name__)
         
         # Query patterns for intent detection
@@ -148,7 +150,12 @@ class IntelligentSearcher:
         reranked = False
         if self._reranker and raw_results:
             try:
-                raw_results = self._reranker.rerank(query, raw_results, top_k=k)
+                raw_results = self._reranker.rerank(
+                    query,
+                    raw_results,
+                    top_k=k,
+                    min_score=self._min_reranker_score,
+                )
                 reranked = True
                 self._logger.info(f"Reranker rescored to {len(raw_results)} results")
             except Exception as exc:

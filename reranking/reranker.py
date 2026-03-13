@@ -141,6 +141,7 @@ class CodeReranker:
         query: str,
         passages: List[Tuple[str, float, Dict[str, Any]]],
         top_k: Optional[int] = None,
+        min_score: float = 0.0,
     ) -> List[Tuple[str, float, Dict[str, Any]]]:
         """Rerank passages by relevance to the query.
 
@@ -149,6 +150,7 @@ class CodeReranker:
             passages: List of (chunk_id, similarity_score, metadata) tuples
                      as returned by ``CodeIndexManager.search()``.
             top_k: Maximum number of results to return. If None, returns all.
+            min_score: Minimum reranker score threshold. 0.0 disables filtering.
 
         Returns:
             Re-sorted list in the same format, with scores replaced by
@@ -176,6 +178,11 @@ class CodeReranker:
 
         # Sort by reranker score descending
         reranked.sort(key=lambda x: x[1], reverse=True)
+
+        # Filter before top_k truncation so strict thresholds can still use the
+        # full recall buffer produced upstream by reranker_recall_k.
+        if min_score > 0.0:
+            reranked = [r for r in reranked if r[1] >= min_score]
 
         if top_k is not None:
             reranked = reranked[:top_k]

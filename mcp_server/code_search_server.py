@@ -8,6 +8,7 @@ inheritance) are available for graph-enriched search results.
 
 import os
 import json
+import math
 import asyncio
 import logging
 from pathlib import Path
@@ -274,6 +275,43 @@ class CodeSearchServer:
 
         return self._index_manager
 
+    @staticmethod
+    def _sanitize_reranker_recall_k(raw_value: Any, default: int = 50) -> int:
+        """Return a positive recall_k integer, or a safe default."""
+        try:
+            recall_k = int(raw_value)
+        except (TypeError, ValueError):
+            return default
+        return recall_k if recall_k > 0 else default
+
+    @staticmethod
+    def _sanitize_min_reranker_score(raw_value: Any, default: float = 0.0) -> float:
+        """Return a safe min reranker score.
+
+        Missing/invalid values fall back to 0.0 (disabled). Values are clamped
+        to the same [0.0, 1.0] range enforced by the CLI so manual config edits
+        cannot diverge from interactive configuration behavior.
+        """
+        try:
+            min_score = float(raw_value)
+        except (TypeError, ValueError):
+            return default
+        if math.isnan(min_score) or math.isinf(min_score):
+            return default
+        return max(0.0, min(1.0, min_score))
+
+    def _load_reranker_search_settings(self) -> tuple[int, float]:
+        """Load/sanitize reranker search settings from install config."""
+        reranker_config = load_reranker_config()
+        if not isinstance(reranker_config, dict):
+            logger.warning("Ignoring malformed reranker config (expected object)")
+            reranker_config = {}
+        recall_k = self._sanitize_reranker_recall_k(reranker_config.get("recall_k", 50))
+        min_reranker_score = self._sanitize_min_reranker_score(
+            reranker_config.get("min_reranker_score", 0.0)
+        )
+        return recall_k, min_reranker_score
+
     def get_searcher(self, project_path: str = None) -> IntelligentSearcher:
         """Get searcher for specific or current project."""
         if project_path is None and self._current_project is None:
@@ -283,13 +321,13 @@ class CodeSearchServer:
 
         if self._current_project != project_path or self._searcher is None:
             reranker = self.reranker()
-            reranker_config = load_reranker_config()
-            recall_k = reranker_config.get("recall_k", 50)
+            recall_k, min_reranker_score = self._load_reranker_search_settings()
             self._searcher = IntelligentSearcher(
                 self.get_index_manager(project_path),
                 self.embedder(),
                 reranker=reranker,
                 reranker_recall_k=recall_k,
+                min_reranker_score=min_reranker_score,
             )
             logger.info(f"Searcher initialized for: {Path(self._current_project).name if self._current_project else 'unknown'}")
 
@@ -545,13 +583,13 @@ class CodeSearchServer:
 
         from search.searcher import IntelligentSearcher
         reranker = self.reranker()
-        reranker_config = load_reranker_config()
-        recall_k = reranker_config.get("recall_k", 50)
+        recall_k, min_reranker_score = self._load_reranker_search_settings()
         target_searcher = IntelligentSearcher(
             target_manager,
             self.embedder(),
             reranker=reranker,
             reranker_recall_k=recall_k,
+            min_reranker_score=min_reranker_score,
         )
 
         filters = {}

@@ -1,6 +1,7 @@
 """Unit tests for reranking.reranker.CodeReranker."""
 
 import math
+import inspect
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -211,6 +212,68 @@ class TestRerank:
         passages = _make_passages(n)
         results = reranker.rerank("query", passages, top_k=2)
         assert len(results) == 2
+
+    def test_min_score_zero_preserves_top_k_behavior(self):
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="cpu")
+        passages = _make_passages(5)
+        mocked_scores = [0.3, 0.9, 0.5, 0.8, 0.1]
+
+        with patch.object(reranker, "_ensure_loaded"), patch.object(
+            reranker, "_score_causal_lm", return_value=mocked_scores
+        ):
+            baseline = reranker.rerank("query", passages, top_k=3)
+            with_threshold = reranker.rerank("query", passages, top_k=3, min_score=0.0)
+
+        assert [c for c, _, _ in with_threshold] == [c for c, _, _ in baseline]
+        assert [s for _, s, _ in with_threshold] == pytest.approx([s for _, s, _ in baseline])
+
+    def test_min_score_filters_mixed_scores(self):
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="cpu")
+        passages = _make_passages(4)
+        mocked_scores = [0.2, 0.91, 0.55, 0.49]
+
+        with patch.object(reranker, "_ensure_loaded"), patch.object(
+            reranker, "_score_causal_lm", return_value=mocked_scores
+        ):
+            filtered = reranker.rerank("query", passages, min_score=0.5)
+
+        assert [chunk_id for chunk_id, _, _ in filtered] == ["chunk_1", "chunk_2"]
+        assert all(score >= 0.5 for _, score, _ in filtered)
+
+    def test_min_score_can_return_empty_results(self):
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="cpu")
+        passages = _make_passages(3)
+
+        with patch.object(reranker, "_ensure_loaded"), patch.object(
+            reranker, "_score_causal_lm", return_value=[0.9, 0.8, 0.7]
+        ):
+            filtered = reranker.rerank("query", passages, top_k=2, min_score=1.1)
+
+        assert filtered == []
+
+    def test_min_score_filter_block_precedes_top_k_block(self):
+        # Guard the intentional order: thresholding must happen before truncation.
+        source = inspect.getsource(CodeReranker.rerank)
+        assert source.index("if min_score > 0.0") < source.index("if top_k is not None")
+
+    def test_min_score_uses_full_recall_set_and_can_return_fewer_than_k(self):
+        reranker = CodeReranker(model_name="Qwen/Qwen3-Reranker-4B", device="cpu")
+        passages = _make_passages(10)
+        seen_passage_count = {"value": 0}
+
+        def _mock_score(_query, scored_passages):
+            seen_passage_count["value"] = len(scored_passages)
+            return [0.99, 0.9, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1]
+
+        with patch.object(reranker, "_ensure_loaded"), patch.object(
+            reranker, "_score_causal_lm", side_effect=_mock_score
+        ):
+            filtered = reranker.rerank("query", passages, top_k=3, min_score=0.5)
+
+        # Keep using the full recall set (10 here), then filter and truncate.
+        assert seen_passage_count["value"] == 10
+        assert len(filtered) == 2
+        assert all(score >= 0.5 for _, score, _ in filtered)
 
     def test_results_sorted_descending_by_score(self):
         pytest.importorskip("torch")
