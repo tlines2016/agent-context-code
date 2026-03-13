@@ -397,27 +397,13 @@ class CodeSearchServer:
     def reranker(self):
         """Lazy initialization of reranker.  Returns None when disabled.
 
-        When a GPU is detected and no explicit reranker config exists,
-        the reranker is auto-enabled with the GPU-optimised default
-        (Qwen3-Reranker-0.6B).
+        The reranker is opt-in — enable via `agent-context-local config reranker on`.
+        GPU installs pre-configure the model name but leave it disabled.
         """
-        from common_utils import detect_gpu, has_explicit_reranker_choice
+        from common_utils import detect_gpu
 
         config = load_reranker_config()
         enabled = config.get("enabled", False)
-
-        # Auto-enable reranker on GPU when user hasn't explicitly configured it.
-        if not enabled and not has_explicit_reranker_choice():
-            device = detect_gpu()
-            if device in ("cuda", "mps"):
-                from reranking.reranker_catalog import GPU_DEFAULT_RERANKER_MODEL
-                logger.info(
-                    "GPU detected (%s). Auto-enabling reranker: %s",
-                    device,
-                    GPU_DEFAULT_RERANKER_MODEL,
-                )
-                config = {"enabled": True, "model_name": GPU_DEFAULT_RERANKER_MODEL}
-                enabled = True
 
         if not enabled:
             logger.info("Reranker not enabled")
@@ -1292,8 +1278,8 @@ class CodeSearchServer:
             if not test_project_path.exists():
                 return json.dumps({
                     "success": False,
-                    "error": "Test project not found. The sample project may not be available.",
-                    "suggestion": "Ensure the repository is fully cloned. The tests/test_data/python_project directory may be missing."
+                    "error": "Test project not found. This feature is only available for source/development installs (not PyPI installs).",
+                    "suggestion": "Index one of your own projects using index_directory() instead."
                 })
 
             result = self.index_directory(str(test_project_path))

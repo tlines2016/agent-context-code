@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tree_sitter import Parser
 
-from chunking.available_languages import get_availiable_language
+from chunking.available_languages import get_available_language
 # map {language: language_obj}
-AVAILABLE_LANGUAGES = get_availiable_language()
+AVAILABLE_LANGUAGES = get_available_language()
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from tree_sitter import Language
 
 logger = logging.getLogger(__name__)
 
-def get_availiable_language():
+def get_available_language():
     """
     Return a map {language: language_obj}
     """

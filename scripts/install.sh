@@ -322,7 +322,7 @@ except Exception:
     GPU_RERANKER_MODEL="Qwen/Qwen3-Reranker-0.6B"
     msg "GPU detected — saving GPU-optimised model defaults to install_config.json"
     msg "  Embedding: ${GPU_EMBED_MODEL}"
-    msg "  Reranker:  ${GPU_RERANKER_MODEL} (auto-enabled)"
+    msg "  Reranker:  ${GPU_RERANKER_MODEL} (pre-configured, opt-in — run 'agent-context-local config reranker on' to enable)"
     mkdir -p "${STORAGE_DIR}"
     (uv run --directory "${PROJECT_DIR}" python -c "
 import json, sys, os
@@ -334,7 +334,7 @@ if os.path.exists(config_path):
     except Exception:
         pass
 config['embedding_model'] = {'model_name': sys.argv[2], 'auto_configured': True}
-config['reranker'] = {'model_name': sys.argv[3], 'enabled': True, 'recall_k': 50, 'auto_configured': True}
+config['reranker'] = {'model_name': sys.argv[3], 'enabled': False, 'recall_k': 50, 'auto_configured': True}
 config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6], 'extra': sys.argv[7]}
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
@@ -346,9 +346,8 @@ with open(config_path, 'w') as f:
   fi
 fi
 
-# ── GPU-auto-enabled reranker download ────────────────────────────────
-# When the installer auto-enabled the reranker for GPU, download it now
-# (regardless of CODE_SEARCH_PROFILE) so it's ready on first MCP run.
+# ── GPU reranker pre-download ─────────────────────────────────────────
+# Pre-download the GPU reranker model so it is ready when the user enables it.
 if [[ -n "${GPU_RERANKER_AUTO:-}" ]]; then
   msg "Downloading GPU reranker model: ${GPU_RERANKER_AUTO}"
   if (cd "${PROJECT_DIR}" && uv run scripts/download_reranker_standalone.py --storage-dir "${STORAGE_DIR}" --model "${GPU_RERANKER_AUTO}" -v); then

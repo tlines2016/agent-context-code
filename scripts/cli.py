@@ -1750,7 +1750,7 @@ def main() -> None:
         suggestion = _suggest_command(command)
         if suggestion:
             print(f"  Did you mean: {cyan(suggestion)}?")
-        print(f"Run '{cyan('python scripts/cli.py help')}' to see available commands.\n")
+        print(f"Run '{cyan(f'{_cmd_prefix()} help')}' to see available commands.\n")
         sys.exit(1)
 
     handler()

@@ -31,11 +31,14 @@
 ```
 
 ![PyPI version](https://img.shields.io/pypi/v/agent-context-local)
+![Release status](https://img.shields.io/badge/status-beta-orange)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![MCP Compatible](https://img.shields.io/badge/MCP-compatible-blueviolet.svg)
 
 **Local semantic code search for AI coding assistants.**
+
+> **Release status:** `0.9.0` beta. The project is well-tested and actively used, but broader real-world usage may surface edge cases we have not encountered yet.
 
 AGENT Context Local is an MCP server that gives your AI coding assistant
 semantic understanding of your codebase. It parses code into functions and
@@ -58,7 +61,7 @@ Source: [tlines2016/agent-context-code](https://github.com/tlines2016/agent-cont
 - **29 languages** — Python, TypeScript, Go, Rust, Java, C/C++, and [23 more](#supported-languages).
 - **Optional reranking** — Cross-encoder second pass for higher-precision results when you need them.
 - **Runs on any laptop** — Default model is 22.7M params, CPU-optimized, no GPU required. GPU users get auto-upgraded models for higher quality.
-- **Put your GPU to work** — Want to leverage your GPU to help your AI Agent work on your codebase? AGENT Context Local auto-detects your hardware and upgrades to higher-quality embedding and reranking models. Continue to use APIs for SOTA AI Agent coding while your local GPU powers the retrieval layer that makes it smarter.
+- **Put your GPU to work** — Want to leverage your GPU to help your AI Agent work on your codebase? AGENT Context Local auto-detects your hardware and upgrades to higher-quality embedding and reranking models. Continue to use APIs for SOTA AI Agent coding while your computers GPU powers the retrieval layer that makes it smarter.
 
 ## Getting Started
 
@@ -482,20 +485,22 @@ of reranker models.
 
 ### GPU Auto-Detection
 
-When a GPU is available (NVIDIA CUDA, AMD ROCm, or Apple MPS), the system
+When a supported GPU backend is available (NVIDIA CUDA, AMD ROCm on Linux, or
+Apple MPS), the system
 automatically upgrades defaults for better quality with no manual configuration:
 
 - **Embedding model**: Auto-upgrades from mxbai-embed-xsmall-v1 (CPU default)
   to Qwen3-Embedding-0.6B when a GPU is detected and no explicit model is
   configured.
-- **Reranker**: Auto-enables Qwen3-Reranker-0.6B on GPU when no explicit
-  reranker config exists.
+- **Reranker**: Pre-configures Qwen3-Reranker-0.6B for GPU installs (written to
+  config as **disabled**). It is opt-in — enable it after install with:
+  `agent-context-local config reranker on`
 - **Install scripts**: When running the installer with a GPU present, the
   GPU-optimised models are saved to `install_config.json` automatically.
 
-This is completely transparent — GPU users get better defaults without thinking
-about it. Explicit user configuration (via `config model`, `config reranker`,
-or `install_config.json`) always takes precedence over auto-detection.
+The embedding model upgrade is automatic. The reranker requires explicit opt-in.
+Explicit user configuration (via `config model`, `config reranker`, or
+`install_config.json`) always takes precedence.
 
 Verify with `python scripts/cli.py doctor` — it shows GPU status and whether
 model auto-upgrade is active.
@@ -569,9 +574,8 @@ reranker is entirely optional — search works well without it.
 
 ### Idle Memory Management
 
-When the MCP server is running but no queries are active, models can consume
-significant GPU VRAM (or system RAM on CPU installs). A two-tier idle
-management system automatically reclaims memory:
+During active queries, models use GPU VRAM (or RAM on CPU installs). A two-tier
+idle management system automatically reclaims memory between sessions:
 
 | Tier | Default | What happens | Restore time |
 |------|---------|--------------|--------------|
@@ -606,8 +610,13 @@ for full configuration examples across all supported MCP clients.
 
 ### AMD GPU Support (ROCm)
 
-AMD GPUs work out of the box once you install the ROCm build of PyTorch. The
-device detection picks it up automatically.
+AMD GPU acceleration currently requires Linux with ROCm 7.1+.
+The ROCm PyTorch wheels for this workflow are Linux-only today, so AMD GPUs on
+Windows are not yet supported.
+
+> **Windows note:** Until PyPI publishes Windows-compatible ROCm wheels, AMD
+> GPU users on Windows should run in CPU mode; the installer will fall back
+> automatically.
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/rocm7.1
@@ -619,8 +628,9 @@ Or with uv:
 uv pip install torch --index-url https://download.pytorch.org/whl/rocm7.1
 ```
 
-> **Note:** ROCm 6.2+ is the minimum for AMD Strix Halo APUs (Ryzen AI Max
-> series). For other AMD GPUs, ROCm 7.x is recommended. Integrated GPUs on
+> **Note:** ROCm 7.1+ is the supported baseline for AGENT Context Local. Strix
+> Halo APUs (Ryzen AI Max series) may run with ROCm 6.2+, but that path is not
+> the default tested configuration here. Integrated GPUs on
 > APUs share system memory, so VRAM limits depend on your system RAM allocation.
 
 Verify with `python scripts/cli.py doctor` — it reports your GPU type

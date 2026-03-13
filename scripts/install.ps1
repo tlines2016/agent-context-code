@@ -224,11 +224,12 @@ elseif (Get-Command rocm-smi -ErrorAction SilentlyContinue) {
     } catch {}
 
     Write-Host "AMD GPU detected: $gpuName"
-
-    # AMD ROCm on Windows — use the ROCm PyTorch index
-    # Note: ROCm on Windows has limited support; HIP SDK must be installed
-    $torchIndexUrl = "https://download.pytorch.org/whl/rocm6.2.4"
-    $gpuStatus = "amd-rocm6.2"
+    # ROCm PyTorch wheels are Linux-only; skip GPU torch install on Windows.
+    Write-Warning "ROCm PyTorch is Linux-only. Falling back to CPU PyTorch on Windows."
+    Write-Host "  For AMD GPU acceleration on Windows, install HIP SDK and re-run on Linux, or wait for a future DirectML release."
+    $torchIndexUrl = ""
+    $gpuVendor = "cpu"
+    $gpuStatus = "amd-rocm-windows-unsupported"
 }
 else {
     # Check for AMD GPU via WMI even without ROCm tools
@@ -339,7 +340,7 @@ if ($gpuVendor -ne "cpu" -and $gpuStatus -ne "cpu-fallback") {
         $gpuRerankerModel = "Qwen/Qwen3-Reranker-0.6B"
         Write-Host "GPU detected - saving GPU-optimised model defaults to install_config.json"
         Write-Host "  Embedding: $gpuEmbedModel"
-        Write-Host "  Reranker:  $gpuRerankerModel (auto-enabled)"
+        Write-Host "  Reranker:  $gpuRerankerModel (pre-configured, opt-in - run 'agent-context-local config reranker on' to enable)"
         # Write config using uv run python (stdlib only) to avoid
         # ConvertFrom-Json -AsHashtable which requires PowerShell 7+.
         New-Item -ItemType Directory -Force -Path $StorageDir | Out-Null
@@ -353,7 +354,7 @@ if os.path.exists(config_path):
     except Exception:
         pass
 config['embedding_model'] = {'model_name': sys.argv[2], 'auto_configured': True}
-config['reranker'] = {'model_name': sys.argv[3], 'enabled': True, 'recall_k': 50, 'auto_configured': True}
+config['reranker'] = {'model_name': sys.argv[3], 'enabled': False, 'recall_k': 50, 'auto_configured': True}
 config['gpu'] = {'vendor': sys.argv[4], 'torch_index_url': sys.argv[5], 'status': sys.argv[6], 'extra': sys.argv[7]}
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
@@ -365,9 +366,8 @@ with open(config_path, 'w') as f:
     }
 }
 
-# ── GPU-auto-enabled reranker download ────────────────────────────────
-# When the installer auto-enabled the reranker for GPU, download it now
-# (regardless of CODE_SEARCH_PROFILE) so it's ready on first MCP run.
+# ── GPU reranker pre-download ─────────────────────────────────────────
+# Pre-download the GPU reranker model so it is ready when the user enables it.
 if ($gpuRerankerAuto) {
     Write-Host "Downloading GPU reranker model: $gpuRerankerAuto"
     Push-Location $ProjectDir

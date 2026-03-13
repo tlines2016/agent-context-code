@@ -864,12 +864,17 @@ class CodeIndexManager:
     def _escape_like_pattern(value: str) -> str:
         """Escape a value for safe use inside a SQL LIKE pattern.
 
-        Escapes single quotes (SQL string delimiter), ``%`` (matches any
-        sequence), and ``_`` (matches any single character) so that
-        user-provided filter values are treated as literal strings.
+        Escapes backslash (the ESCAPE character in all LIKE clauses), single
+        quotes (SQL string delimiter), ``%`` (any-sequence wildcard), and ``_``
+        (single-character wildcard) so filter values are treated as literals.
+
+        Backslash must be escaped first — before ``%`` and ``_`` — because
+        those substitutions introduce new backslashes that must not be
+        double-escaped.
         """
         return (
             value
+            .replace("\\", "\\\\")   # Must be first: escape the ESCAPE char itself
             .replace("'", "''")
             .replace("%", "\\%")
             .replace("_", "\\_")
