@@ -702,7 +702,14 @@ class CodeSearchServer:
 
             if result.skipped_files:
                 response["skipped_file_count"] = len(result.skipped_files)
-                response["skipped_files"] = result.skipped_files
+                # Cap the detailed list to avoid oversized MCP responses
+                # on repos with many skipped files.
+                _MAX_SKIPPED_DETAIL = 50
+                if len(result.skipped_files) > _MAX_SKIPPED_DETAIL:
+                    response["skipped_files"] = result.skipped_files[:_MAX_SKIPPED_DETAIL]
+                    response["skipped_files_truncated"] = True
+                else:
+                    response["skipped_files"] = result.skipped_files
 
             if result.error:
                 response["error"] = result.error
