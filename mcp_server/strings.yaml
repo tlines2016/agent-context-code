@@ -11,7 +11,8 @@ tools:
       project_path: search a different indexed project without switching context.
       max_results_per_file: cap per file for breadth (e.g. 3–5). Excess pushed to end, not removed.
     Example: search_code("retry logic with exponential backoff", k=10, file_pattern="*.py")
-    Score: higher is a closer semantic match; scores below ~0.4 are loose hints only. Add chunk_type="function" or "method" to behavioral queries to avoid config/property results ranking above logic.
+    Query tip: code-vocabulary strings outperform natural-language questions — "sellToPlayer shop deduct coins" over "where does the shop sell items". If all scores < 0.40, try method-name prefixes, add file_pattern, or use chunk_type="class" to find the container first.
+    Scores: higher = better match; below ~0.4 = weak. Use chunk_type="function"/"method" for behavioral queries to filter out config/property noise.
 
   find_similar_code: |
     Find code structurally or functionally similar to a known chunk. Returns ranked matches by embedding distance.
@@ -21,10 +22,11 @@ tools:
       chunk_id (required): identifier from a search_code result.
       k: number of similar chunks to return (default 5).
     Example: find_similar_code("src/auth.py::authenticate_user::0", k=10)
+    Also useful as fallback when search_code returns low scores — find any loosely-related chunk, then pivot via similarity. Scores ≥ 0.80 = same pattern/interface; 0.65–0.79 = related domain.
 
   get_graph_context: |
-    Deep structural traversal around a code chunk. Returns containment (class→method) and inheritance (child→parent) relationships within max_depth hops.
-    USE WHEN: You have a chunk_id from search_code and need to understand how it connects to surrounding code (parent class, sibling methods, inheritance chain).
+    Deep structural traversal around a code chunk. Returns containment (class→method), inheritance (child→parent), and call (caller→callee) relationships within max_depth hops.
+    USE WHEN: You have a chunk_id from search_code and need the structural neighborhood (parent class, sibling methods, inheritance chain, callers/callees).
     DO NOT USE WHEN: You want to find code by meaning — use search_code (which already includes lightweight graph hints).
     Key args:
       chunk_id (required): identifier from a search_code result.
@@ -47,7 +49,7 @@ tools:
   get_index_status: |
     Get index health, sync status, and metadata for the active project.
     USE WHEN: You need to check whether a project is indexed, verify sync state (synced/degraded), or inspect storage metrics.
-    Returns: chunk count, storage size, sync status, model info, reranker state (compact summary, no per-file counts).
+    Returns: chunk count, storage size, sync status, model info, reranker state, edge_types (compact summary, no per-file counts).
 
   list_projects: |
     List all indexed projects with paths and metadata.
