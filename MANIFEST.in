@@ -1,2 +1,3 @@
 recursive-include scripts *.sh *.ps1 *.py
+recursive-include ui_server/static *
 include py.typed

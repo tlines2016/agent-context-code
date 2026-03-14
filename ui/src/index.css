@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e2e8f0;
+    --text-muted: #64748b;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+  }
+
+  body {
+    @apply bg-[#0f1117] text-slate-200 antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-1.5;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-slate-600/60;
+  }
+
+  /* Code blocks */
+  pre, code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-slate-700/50 bg-slate-800/50 backdrop-blur-sm;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium
+           transition-colors focus-visible:outline-none focus-visible:ring-2
+           focus-visible:ring-indigo-500 disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-primary {
+    @apply btn bg-indigo-600 text-white hover:bg-indigo-500;
+  }
+
+  .btn-secondary {
+    @apply btn border border-slate-600 bg-slate-700 text-slate-200 hover:bg-slate-600;
+  }
+
+  .btn-ghost {
+    @apply btn text-slate-400 hover:text-slate-200 hover:bg-slate-700/50;
+  }
+
+  .btn-danger {
+    @apply btn border border-red-800 bg-red-900/30 text-red-300 hover:bg-red-900/50;
+  }
+
+  .input {
+    @apply w-full rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm
+           text-slate-200 placeholder-slate-500 focus:border-indigo-500 focus:outline-none
+           focus:ring-1 focus:ring-indigo-500;
+  }
+
+  .label {
+    @apply block text-xs font-medium text-slate-400 mb-1.5;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-slate-400
+           transition-colors hover:bg-slate-700/50 hover:text-slate-200
+           cursor-pointer;
+  }
+
+  .nav-item-active {
+    @apply nav-item bg-slate-700/70 text-slate-100;
+  }
+
+  /* Syntax-highlighted code block */
+  .code-block {
+    @apply overflow-x-auto rounded-md bg-slate-900 p-4 text-sm font-mono
+           leading-relaxed border border-slate-700/50;
+  }
+
+  .code-block code {
+    @apply text-slate-200 whitespace-pre;
+  }
+}
