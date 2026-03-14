@@ -1,6 +1,7 @@
 /**
  * HealthDashboard — shows index statistics, sync status, and re-index controls.
  */
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart,
@@ -31,6 +32,93 @@ const CHART_COLORS = [
   '#34d399', '#6ee7b7', '#fbbf24', '#f87171',
 ]
 
+// ---------------------------------------------------------------------------
+// ConfirmDialog — accessible, keyboard-navigable replacement for window.confirm
+// ---------------------------------------------------------------------------
+
+interface ConfirmDialogProps {
+  open: boolean
+  title: string
+  message: string
+  confirmLabel?: string
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = 'Confirm',
+  onConfirm,
+  onCancel,
+}: ConfirmDialogProps) {
+  const confirmBtnRef = useRef<HTMLButtonElement>(null)
+
+  // Move focus to the confirm button when the dialog opens.
+  useEffect(() => {
+    if (open) confirmBtnRef.current?.focus()
+  }, [open])
+
+  // Close on Escape key.
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onCancel])
+
+  if (!open) return null
+
+  return (
+    // Backdrop — clicking outside cancels the dialog.
+    <div
+      role="presentation"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+        aria-describedby="confirm-dialog-desc"
+        className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl"
+        // Prevent clicks inside the dialog from reaching the backdrop.
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <AlertTriangle size={18} className="text-amber-400 shrink-0" />
+          <h2 id="confirm-dialog-title" className="text-slate-100 font-semibold">
+            {title}
+          </h2>
+        </div>
+        <p id="confirm-dialog-desc" className="text-sm text-slate-400 mb-6">
+          {message}
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="btn-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            ref={confirmBtnRef}
+            onClick={onConfirm}
+            className="btn-danger"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+
 function SyncBadge({ status }: { status: 'synced' | 'degraded' }) {
   if (status === 'synced') {
     return (
@@ -48,6 +136,7 @@ function SyncBadge({ status }: { status: 'synced' | 'degraded' }) {
 
 export default function HealthDashboard() {
   const qc = useQueryClient()
+  const [clearDialogOpen, setClearDialogOpen] = useState(false)
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['index-status'],
@@ -98,6 +187,19 @@ export default function HealthDashboard() {
 
   return (
     <div className="p-6 space-y-6">
+      {/* Accessible confirmation dialog for destructive "Clear Index" action */}
+      <ConfirmDialog
+        open={clearDialogOpen}
+        title="Clear Index"
+        message="This will permanently delete the entire index for the active project. This action cannot be undone."
+        confirmLabel="Clear Index"
+        onConfirm={() => {
+          setClearDialogOpen(false)
+          clearMutation.mutate()
+        }}
+        onCancel={() => setClearDialogOpen(false)}
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -113,11 +215,7 @@ export default function HealthDashboard() {
             Refresh
           </button>
           <button
-            onClick={() => {
-              if (confirm('Clear the entire index? This cannot be undone.')) {
-                clearMutation.mutate()
-              }
-            }}
+            onClick={() => setClearDialogOpen(true)}
             disabled={clearMutation.isPending}
             className="btn-danger"
           >

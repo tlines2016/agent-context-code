@@ -5,10 +5,10 @@ Wraps CodeSearchServer.list_projects() and switch_project().
 
 import json
 import logging
-from typing import Optional
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from ui_server.dependencies import get_server
 
@@ -18,7 +18,16 @@ router = APIRouter()
 
 
 class SwitchProjectRequest(BaseModel):
-    project_path: str
+    project_path: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("project_path")
+    @classmethod
+    def project_path_must_be_absolute(cls, v: str) -> str:
+        """Require an absolute path to prevent unintended relative-path traversal."""
+        p = Path(v)
+        if not p.is_absolute():
+            raise ValueError("project_path must be an absolute file-system path.")
+        return str(p)
 
 
 @router.get("/projects")

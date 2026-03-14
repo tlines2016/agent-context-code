@@ -24,6 +24,13 @@ import sys
 import webbrowser
 from pathlib import Path
 
+# Delay before opening the browser after uvicorn starts.
+# 1.5 s gives the server time to bind and accept connections on slower systems.
+_BROWSER_OPEN_DELAY_S = 1.5
+
+# Localhost addresses that are considered safe to bind to without a warning.
+_LOCALHOST_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
 
 def _configure_logging(verbose: bool = False) -> None:
     """Configure logging, mirroring the MCP server's approach."""
@@ -41,6 +48,19 @@ def _configure_logging(verbose: bool = False) -> None:
     )
 
 
+def _parse_port(value: str) -> int:
+    """Argparse type that validates TCP port range (1–65535)."""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a valid integer port number.")
+    if not (1 <= port <= 65535):
+        raise argparse.ArgumentTypeError(
+            f"Port {port} is out of range; must be between 1 and 65535."
+        )
+    return port
+
+
 def main() -> None:
     """Launch the FastAPI UI server with uvicorn."""
     parser = argparse.ArgumentParser(
@@ -55,7 +75,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--port",
-        type=int,
+        type=_parse_port,
         default=int(os.environ.get("CODE_SEARCH_UI_PORT", "7432")),
         help="TCP port to serve on (default: 7432 or CODE_SEARCH_UI_PORT env var)",
     )
@@ -78,6 +98,15 @@ def main() -> None:
 
     _configure_logging(verbose=args.verbose)
     logger = logging.getLogger(__name__)
+
+    # Warn when the server is bound to a non-loopback address, as that exposes
+    # the local code index to other machines on the same network.
+    if args.host not in _LOCALHOST_HOSTS:
+        logger.warning(
+            "Server is binding to %s — this exposes your local code index to "
+            "other hosts on the network. Use 127.0.0.1 unless you intend this.",
+            args.host,
+        )
 
     # Add repo root to sys.path so imports work in source-checkout mode.
     repo_root = Path(__file__).resolve().parent.parent
@@ -111,8 +140,7 @@ def main() -> None:
         import threading
         def _open_browser() -> None:
             import time
-            # 1.5 s gives uvicorn time to bind and accept connections on slower systems.
-            time.sleep(1.5)
+            time.sleep(_BROWSER_OPEN_DELAY_S)
             webbrowser.open(url)
         threading.Thread(target=_open_browser, daemon=True).start()
 

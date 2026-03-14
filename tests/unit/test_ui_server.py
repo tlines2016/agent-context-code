@@ -19,9 +19,11 @@ from fastapi.testclient import TestClient
 class _MockServer:
     """Lightweight stand-in for CodeSearchServer."""
 
-    def search_code(self, **_kwargs: Any) -> str:
+    def search_code(self, **kwargs: Any) -> str:
+        # Echo the query back so whitespace-stripping tests can verify it.
+        query = kwargs.get("query", "test query")
         return json.dumps({
-            "query": "test query",
+            "query": query,
             "project": "/fake/project",
             "results": [
                 {
@@ -111,18 +113,31 @@ class TestSearch:
         assert body["results"][0]["file"] == "src/auth.py"
 
     def test_search_validates_empty_query(self, client: TestClient):
-        """Server returns 400 for empty / whitespace queries."""
-        from unittest.mock import patch as _patch
+        """Pydantic rejects whitespace-only queries with 422."""
+        resp = client.post("/api/v1/search", json={"query": "   "})
+        assert resp.status_code == 422
 
-        # The mock server does not validate; patch it to return an error response
-        with _patch.object(
-            _MockServer,
-            "search_code",
-            return_value=json.dumps({"error": "Search query must not be empty."}),
-        ):
-            resp = client.post("/api/v1/search", json={"query": "   "})
-            # FastAPI propagates the 400 from the error dict
-            assert resp.status_code == 400
+    def test_search_rejects_empty_string_query(self, client: TestClient):
+        """Pydantic rejects zero-length queries with 422."""
+        resp = client.post("/api/v1/search", json={"query": ""})
+        assert resp.status_code == 422
+
+    def test_search_rejects_oversized_query(self, client: TestClient):
+        """Query longer than 1000 chars is rejected with 422."""
+        resp = client.post("/api/v1/search", json={"query": "a" * 1001})
+        assert resp.status_code == 422
+
+    def test_search_accepts_max_length_query(self, client: TestClient):
+        """Query of exactly 1000 chars is accepted."""
+        resp = client.post("/api/v1/search", json={"query": "a" * 1000})
+        assert resp.status_code == 200
+
+    def test_search_strips_whitespace_from_query(self, client: TestClient):
+        """Leading/trailing whitespace is stripped before forwarding."""
+        resp = client.post("/api/v1/search", json={"query": "  auth  "})
+        assert resp.status_code == 200
+        # Returned query should be stripped
+        assert resp.json()["query"] == "auth"
 
     def test_search_accepts_optional_fields(self, client: TestClient):
         resp = client.post(
@@ -142,6 +157,23 @@ class TestSearch:
         resp = client.post("/api/v1/search", json={"query": "q", "k": 0})
         assert resp.status_code == 422
         resp = client.post("/api/v1/search", json={"query": "q", "k": 999})
+        assert resp.status_code == 422
+
+    def test_search_rejects_invalid_chunk_type_chars(self, client: TestClient):
+        """chunk_type values with special chars (e.g. path traversal) are rejected."""
+        for bad in ["../../etc", "func;drop", "class name", "", " "]:
+            resp = client.post("/api/v1/search", json={"query": "q", "chunk_type": bad})
+            assert resp.status_code == 422, f"Expected 422 for chunk_type={bad!r}"
+
+    def test_search_accepts_valid_chunk_types(self, client: TestClient):
+        """Standard chunk type names are accepted."""
+        for good in ["function", "class", "method", "module", "chunk_type_2"]:
+            resp = client.post("/api/v1/search", json={"query": "q", "chunk_type": good})
+            assert resp.status_code == 200, f"Expected 200 for chunk_type={good!r}"
+
+    def test_search_rejects_max_results_per_file_too_large(self, client: TestClient):
+        """max_results_per_file must be ≤ 50."""
+        resp = client.post("/api/v1/search", json={"query": "q", "max_results_per_file": 51})
         assert resp.status_code == 422
 
 
@@ -164,6 +196,21 @@ class TestProjects:
         )
         assert resp.status_code == 200
         assert resp.json()["success"] is True
+
+    def test_switch_project_rejects_relative_path(self, client: TestClient):
+        """A relative project_path must be rejected with 422."""
+        resp = client.post(
+            "/api/v1/projects/switch",
+            json={"project_path": "relative/path"},
+        )
+        assert resp.status_code == 422
+
+    def test_switch_project_rejects_empty_path(self, client: TestClient):
+        resp = client.post(
+            "/api/v1/projects/switch",
+            json={"project_path": ""},
+        )
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +237,37 @@ class TestIndex:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
+    def test_run_index_rejects_relative_path(self, client: TestClient):
+        """Relative directory_path is rejected with 422."""
+        resp = client.post(
+            "/api/v1/index/run",
+            json={"directory_path": "relative/path"},
+        )
+        assert resp.status_code == 422
+
+    def test_run_index_rejects_empty_path(self, client: TestClient):
+        resp = client.post(
+            "/api/v1/index/run",
+            json={"directory_path": ""},
+        )
+        assert resp.status_code == 422
+
+    def test_run_index_rejects_too_many_file_patterns(self, client: TestClient):
+        """More than 50 file patterns are rejected with 422."""
+        patterns = [f"**/*.ext{i}" for i in range(51)]
+        resp = client.post(
+            "/api/v1/index/run",
+            json={"directory_path": "/fake/project", "file_patterns": patterns},
+        )
+        assert resp.status_code == 422
+
+    def test_run_index_accepts_valid_file_patterns(self, client: TestClient):
+        resp = client.post(
+            "/api/v1/index/run",
+            json={"directory_path": "/fake/project", "file_patterns": ["**/*.py", "**/*.ts"]},
+        )
+        assert resp.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Settings
@@ -214,6 +292,68 @@ class TestSettings:
             json={"reranker": {"enabled": False, "recall_k": 30}},
         )
         assert resp.status_code == 200
+
+    def test_settings_rejects_recall_k_zero(self, client: TestClient):
+        """recall_k must be ≥ 1."""
+        resp = client.put(
+            "/api/v1/settings",
+            json={"reranker": {"recall_k": 0}},
+        )
+        assert resp.status_code == 422
+
+    def test_settings_rejects_recall_k_too_large(self, client: TestClient):
+        """recall_k must be ≤ 1000."""
+        resp = client.put(
+            "/api/v1/settings",
+            json={"reranker": {"recall_k": 1001}},
+        )
+        assert resp.status_code == 422
+
+    def test_settings_rejects_min_score_out_of_range(self, client: TestClient):
+        """min_reranker_score must be in [0.0, 1.0]."""
+        resp = client.put(
+            "/api/v1/settings",
+            json={"reranker": {"min_reranker_score": 1.5}},
+        )
+        assert resp.status_code == 422
+        resp = client.put(
+            "/api/v1/settings",
+            json={"reranker": {"min_reranker_score": -0.1}},
+        )
+        assert resp.status_code == 422
+
+    def test_settings_accepts_valid_score_range(self, client: TestClient):
+        """Boundary values 0.0 and 1.0 are accepted."""
+        for score in (0.0, 0.5, 1.0):
+            resp = client.put(
+                "/api/v1/settings",
+                json={"reranker": {"min_reranker_score": score}},
+            )
+            assert resp.status_code == 200, f"Expected 200 for score={score}"
+
+    def test_settings_rejects_negative_idle_minutes(self, client: TestClient):
+        """Negative idle minutes are rejected."""
+        resp = client.put(
+            "/api/v1/settings",
+            json={"idle": {"idle_offload_minutes": -1}},
+        )
+        assert resp.status_code == 422
+
+    def test_settings_rejects_idle_minutes_exceeding_max(self, client: TestClient):
+        """Idle minutes > 10080 (one week) are rejected."""
+        resp = client.put(
+            "/api/v1/settings",
+            json={"idle": {"idle_offload_minutes": 10081}},
+        )
+        assert resp.status_code == 422
+
+    def test_settings_rejects_oversized_model_name(self, client: TestClient):
+        """Model names longer than 200 chars are rejected."""
+        resp = client.put(
+            "/api/v1/settings",
+            json={"embedding_model": {"model_name": "x" * 201}},
+        )
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,8 @@ def create_app(server_instance) -> FastAPI:
     # ── CORS ──────────────────────────────────────────────────────────────
     # Allow localhost origins so the Vite dev server (port 5173) and the
     # future VSCode Webview client can reach the API without CORS errors.
+    # Methods and headers are restricted to the minimum set actually used by
+    # the frontend to reduce the CORS attack surface.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -72,8 +74,8 @@ def create_app(server_instance) -> FastAPI:
             "http://127.0.0.1:5173",
         ],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Content-Type"],
     )
 
     # ── API routes ────────────────────────────────────────────────────────

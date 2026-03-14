@@ -8,7 +8,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 try:
     from common_utils import (
@@ -34,21 +34,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Maximum idle timeout accepted (one week in minutes).  Zero means "disabled".
+_MAX_IDLE_MINUTES = 10_080
+
 
 class EmbeddingModelSettings(BaseModel):
-    model_name: Optional[str] = None
+    model_name: Optional[str] = Field(None, max_length=200)
 
 
 class RerankerSettings(BaseModel):
     enabled: Optional[bool] = None
-    model_name: Optional[str] = None
-    recall_k: Optional[int] = None
-    min_reranker_score: Optional[float] = None
+    model_name: Optional[str] = Field(None, max_length=200)
+    recall_k: Optional[int] = Field(None, ge=1, le=1000)
+    min_reranker_score: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class IdleSettings(BaseModel):
-    idle_offload_minutes: Optional[int] = None
-    idle_unload_minutes: Optional[int] = None
+    idle_offload_minutes: Optional[int] = Field(None, ge=0, le=_MAX_IDLE_MINUTES)
+    idle_unload_minutes: Optional[int] = Field(None, ge=0, le=_MAX_IDLE_MINUTES)
 
 
 class SettingsUpdate(BaseModel):
@@ -75,15 +78,15 @@ async def update_settings(update: SettingsUpdate) -> Dict[str, Any]:
         if update.reranker:
             current = load_local_install_config().get("reranker", {})
 
-            def _coalesce(new_val, current_key: str, default):
+            def _resolve_setting_value(new_val, current_key: str, default):
                 """Return new_val when provided, else fall back to existing config or default."""
                 return new_val if new_val is not None else current.get(current_key, default)
 
             save_reranker_config(
-                model_name=_coalesce(update.reranker.model_name, "model_name", ""),
-                enabled=_coalesce(update.reranker.enabled, "enabled", False),
-                recall_k=_coalesce(update.reranker.recall_k, "recall_k", 50),
-                min_reranker_score=_coalesce(update.reranker.min_reranker_score, "min_reranker_score", 0.0),
+                model_name=_resolve_setting_value(update.reranker.model_name, "model_name", ""),
+                enabled=_resolve_setting_value(update.reranker.enabled, "enabled", False),
+                recall_k=_resolve_setting_value(update.reranker.recall_k, "recall_k", 50),
+                min_reranker_score=_resolve_setting_value(update.reranker.min_reranker_score, "min_reranker_score", 0.0),
             )
 
         if update.idle:

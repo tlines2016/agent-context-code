@@ -7,10 +7,11 @@ that the React frontend can render directly.
 
 import json
 import logging
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ui_server.dependencies import get_server
 
@@ -18,15 +19,55 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Allowed characters for chunk_type filter — alphanumeric plus underscore only.
+_CHUNK_TYPE_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., description="Natural language or keyword search query")
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Natural language or keyword search query",
+    )
     k: int = Field(5, ge=1, le=50, description="Number of results to return")
-    file_pattern: Optional[str] = Field(None, description="Glob pattern to filter files")
-    chunk_type: Optional[str] = Field(None, description="Filter by chunk type: function, class, method, etc.")
+    file_pattern: Optional[str] = Field(
+        None,
+        max_length=500,
+        description="Glob pattern to filter files",
+    )
+    chunk_type: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Filter by chunk type: function, class, method, etc.",
+    )
     include_context: bool = Field(True, description="Include graph relationship hints in results")
-    project_path: Optional[str] = Field(None, description="Target project path; uses active project if omitted")
-    max_results_per_file: Optional[int] = Field(None, ge=1, description="Cap results from any single file")
+    project_path: Optional[str] = Field(
+        None,
+        max_length=500,
+        description="Target project path; uses active project if omitted",
+    )
+    max_results_per_file: Optional[int] = Field(None, ge=1, le=50, description="Cap results from any single file")
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_blank(cls, v: str) -> str:
+        """Reject queries that are entirely whitespace."""
+        if not v.strip():
+            raise ValueError("Search query must not be blank.")
+        return v.strip()
+
+    @field_validator("chunk_type")
+    @classmethod
+    def chunk_type_safe_chars(cls, v: Optional[str]) -> Optional[str]:
+        """Allow only identifier-safe characters for chunk_type to prevent injection."""
+        if v is None:
+            return v
+        if not _CHUNK_TYPE_RE.match(v):
+            raise ValueError(
+                "chunk_type must contain only letters, digits, and underscores."
+            )
+        return v
 
 
 class SearchResponse(BaseModel):
