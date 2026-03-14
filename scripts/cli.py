@@ -1709,8 +1709,21 @@ def _ui_server_cmd_parts() -> list[str]:
 
 
 def _ui_port() -> int:
-    """Return the configured UI server port (``CODE_SEARCH_UI_PORT`` or 7432)."""
-    return int(os.environ.get("CODE_SEARCH_UI_PORT", str(_DEFAULT_UI_PORT)))
+    """Return the configured UI server port (``CODE_SEARCH_UI_PORT`` or 7432).
+
+    Falls back to the default port and prints a warning if the env value is
+    not a valid integer so ``open-dashboard`` never crashes on bad config.
+    """
+    raw = os.environ.get("CODE_SEARCH_UI_PORT", "")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            print(yellow(
+                f"Warning: CODE_SEARCH_UI_PORT={raw!r} is not a valid integer — "
+                f"using default port {_DEFAULT_UI_PORT}."
+            ))
+    return _DEFAULT_UI_PORT
 
 
 def _is_dashboard_running(port: int) -> bool:
@@ -1817,6 +1830,8 @@ def cmd_create_shortcut() -> None:
 def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
     """Create an XDG .desktop launcher (Linux)."""
     install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
     extra_flag = _gpu_extra_flag().strip()
 
     # Use the absolute uv path so graphical launchers that don't inherit $PATH
@@ -1825,7 +1840,7 @@ def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
     if is_installed_package() and shutil.which("agent-context-local-ui"):
         exec_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
     else:
-        extra_parts = f"--extra {extra_flag} " if extra_flag else ""
+        extra_parts = f"{extra_flag} " if extra_flag else ""
         exec_cmd = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
 
     desktop_content = (
@@ -1880,13 +1895,15 @@ def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
 def _create_shortcut_macos() -> None:
     """Create a minimal .app bundle in ~/Applications (macOS)."""
     install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
     extra_flag = _gpu_extra_flag().strip()
 
     uv_bin = shutil.which("uv") or "uv"
     if is_installed_package() and shutil.which("agent-context-local-ui"):
         launch_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
     else:
-        extra_parts = f"--extra {extra_flag} " if extra_flag else ""
+        extra_parts = f"{extra_flag} " if extra_flag else ""
         launch_cmd = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
 
     app_dir = Path.home() / "Applications" / "Agent Context Dashboard.app"
@@ -1929,6 +1946,8 @@ def _create_shortcut_macos() -> None:
 def _create_shortcut_windows() -> None:
     """Create a .lnk shortcut on the Windows Desktop via PowerShell."""
     install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
     extra_flag = _gpu_extra_flag().strip()
 
     uv_bin = shutil.which("uv") or "uv"
@@ -1936,7 +1955,7 @@ def _create_shortcut_windows() -> None:
         target = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
         arguments = ""
     else:
-        extra_parts = f"--extra {extra_flag} " if extra_flag else ""
+        extra_parts = f"{extra_flag} " if extra_flag else ""
         target = "cmd.exe"
         # /c start "" keeps cmd.exe hidden after launching the background process.
         arguments = (
@@ -1991,9 +2010,11 @@ def _create_shortcut_wsl() -> None:
         return
 
     install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
     extra_flag = _gpu_extra_flag().strip()
     uv_bin = shutil.which("uv") or "uv"
-    extra_parts = f"--extra {extra_flag} " if extra_flag else ""
+    extra_parts = f"{extra_flag} " if extra_flag else ""
 
     # The server runs inside WSL, so we target wsl.exe from the Windows side.
     wsl_launch = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"

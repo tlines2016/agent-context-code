@@ -8,7 +8,7 @@ model names.
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -33,4 +33,4 @@ async def list_models() -> Dict[str, Any]:
         return {"models": models, "count": len(models)}
     except Exception as exc:
         logger.error("Failed to load model catalog: %s", exc)
-        return {"models": [], "count": 0, "error": str(exc)}
+        raise HTTPException(status_code=500, detail=f"Failed to load model catalog: {exc}")

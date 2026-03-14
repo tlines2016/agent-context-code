@@ -23,7 +23,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ui_server import dependencies
@@ -99,7 +99,7 @@ def create_app(server_instance) -> FastAPI:
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
         @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str, request: Request) -> FileResponse:
+        async def spa_fallback(full_path: str, request: Request) -> Response:
             """Serve index.html for all non-API paths (SPA client-side routing)."""
             # Let the API prefix fall through to its own 404 handler.
             if full_path.startswith("api/"):

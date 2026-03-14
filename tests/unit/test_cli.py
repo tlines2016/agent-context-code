@@ -355,3 +355,53 @@ class TestDashboardCommands:
         assert app_run.exists(), "Expected AppRun executable inside .app bundle"
         # Verify it's executable
         assert app_run.stat().st_mode & 0o111, "AppRun should be executable"
+
+    def test_ui_port_falls_back_to_default_on_bad_env_var(self, monkeypatch, capsys):
+        """_ui_port() must fall back to 7432 (not raise) when env var is not an integer."""
+        monkeypatch.setenv("CODE_SEARCH_UI_PORT", "not-a-number")
+        result = _ui_port()
+        assert result == 7432
+        out = capsys.readouterr().out
+        assert "Warning" in out or "not a valid integer" in out.lower() or "not-a-number" in out
+
+    def test_create_shortcut_linux_exec_cmd_no_double_extra_flag(self, monkeypatch, tmp_path):
+        """GPU extra flag must not be duplicated in the Linux .desktop Exec line."""
+        import scripts.cli as cli_mod
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        apps_dir = fake_home / ".local" / "share" / "applications"
+
+        monkeypatch.setattr(cli_mod.Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr("scripts.cli.is_wsl", lambda: False)
+        monkeypatch.setattr("scripts.cli.is_windows", lambda: False)
+        monkeypatch.setattr("scripts.cli.platform.system", lambda: "Linux")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        # Simulate a GPU extra being configured.
+        monkeypatch.setattr("scripts.cli._gpu_extra_flag", lambda: "--extra cu128 ")
+
+        cli_mod._create_shortcut_linux(also_desktop=False)
+
+        desktop_file = apps_dir / "agent-context-dashboard.desktop"
+        content = desktop_file.read_text()
+        # Should contain exactly one --extra flag, not "--extra --extra"
+        assert "--extra --extra" not in content
+        assert "--extra cu128" in content
+
+    def test_create_shortcut_macos_no_double_extra_flag(self, monkeypatch, tmp_path):
+        """GPU extra flag must not be duplicated in the macOS AppRun script."""
+        import scripts.cli as cli_mod
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+
+        monkeypatch.setattr(cli_mod.Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("scripts.cli._gpu_extra_flag", lambda: "--extra cu128 ")
+
+        cli_mod._create_shortcut_macos()
+
+        app_run = fake_home / "Applications" / "Agent Context Dashboard.app" / "Contents" / "MacOS" / "AppRun"
+        content = app_run.read_text()
+        assert "--extra --extra" not in content
+        assert "--extra cu128" in content
