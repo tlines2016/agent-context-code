@@ -11,9 +11,8 @@ tools:
       project_path: search a different indexed project without switching context.
       max_results_per_file: cap per file for breadth (e.g. 3–5). Excess pushed to end, not removed.
     Example: search_code("retry logic with exponential backoff", k=10, file_pattern="*.py")
-    Cross-project: search_code("auth middleware", project_path="/other/repo")
-    Scores: higher = better match; below ~0.4 = weak. Use chunk_type="function"/"method" for behavioral queries to filter out config/property noise.
     Query tip: code-vocabulary strings outperform natural-language questions — "sellToPlayer shop deduct coins" over "where does the shop sell items". If all scores < 0.40, try method-name prefixes, add file_pattern, or use chunk_type="class" to find the container first.
+    Scores: higher = better match; below ~0.4 = weak. Use chunk_type="function"/"method" for behavioral queries to filter out config/property noise.
 
   find_similar_code: |
     Find code structurally or functionally similar to a known chunk. Returns ranked matches by embedding distance.
@@ -40,7 +39,6 @@ tools:
     Index a codebase for semantic search. Creates isolated per-project storage. Run before searching a new project.
     USE WHEN: A project has never been indexed, or you want to force a full re-index.
     DO NOT USE WHEN: The project is already indexed — search_code auto-refreshes stale indexes before each search.
-    .gitignore and .cursorignore files are automatically respected — matching paths are excluded from the index. Nested per-directory .gitignore files are also honored. No configuration needed.
     Key args:
       directory_path (required): absolute path to the project root.
       project_name, file_patterns: optional display name and glob includes (sensible defaults).
@@ -52,7 +50,6 @@ tools:
     Get index health, sync status, and metadata for the active project.
     USE WHEN: You need to check whether a project is indexed, verify sync state (synced/degraded), or inspect storage metrics.
     Returns: chunk count, storage size, sync status, model info, reranker state, edge_types (compact summary, no per-file counts).
-    Also check embedding_dimension (1024+ outperforms 384) and reranker enabled/disabled if results seem poor.
 
   list_projects: |
     List all indexed projects with paths and metadata.
