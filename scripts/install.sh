@@ -486,3 +486,27 @@ if [[ "${IS_WSL}" -eq 1 ]]; then
   printf "%s\n" "• Windows-cached Hugging Face tokens may not be visible in WSL."
   printf "%s\n" "• Set HF_TOKEN explicitly in WSL when needed."
 fi
+
+# ── Optional desktop shortcut ─────────────────────────────────────────
+# Only prompt in interactive sessions; skip silently when piped/non-interactive.
+if [ -t 0 ]; then
+  printf "\n${BOLD}Create a desktop shortcut to open the Agent Context Dashboard?${NC} [Y/n]: "
+  read -r _sc_choice
+  case "${_sc_choice}" in
+    n|N)
+      msg "Skipping desktop shortcut."
+      msg "  Create one later with: uv run ${UV_EXTRA_FLAG}--directory ${PROJECT_DIR} python scripts/cli.py create-shortcut"
+      ;;
+    *)
+      if (cd "${PROJECT_DIR}" && uv run ${UV_EXTRA_FLAG}--directory "${PROJECT_DIR}" python scripts/cli.py create-shortcut 2>&1); then
+        msg "Desktop shortcut created."
+      else
+        printf "${YELLOW}  Could not create shortcut automatically.${NC}\n"
+        printf "  Try again later: uv run %s--directory %s python scripts/cli.py create-shortcut\n" "${UV_EXTRA_FLAG}" "${PROJECT_DIR}"
+      fi
+      ;;
+  esac
+else
+  printf "%s\n" "• Open the dashboard: uv run ${UV_EXTRA_FLAG}--directory ${PROJECT_DIR} python scripts/cli.py open-dashboard"
+  printf "%s\n" "• Create a desktop shortcut: uv run ${UV_EXTRA_FLAG}--directory ${PROJECT_DIR} python scripts/cli.py create-shortcut"
+fi

@@ -532,3 +532,32 @@ Write-Host ""
 Write-Host "Diagnostics: uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py doctor"
 Write-Host "Setup guide: uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py setup-guide"
 Write-Host "Uninstall:   irm https://raw.githubusercontent.com/tlines2016/agent-context-code/main/scripts/uninstall.ps1 | iex"
+
+# ── Optional desktop shortcut ─────────────────────────────────────────
+# Only prompt in interactive sessions; skip silently when piped or automated.
+$_isInteractiveForShortcut = [Environment]::UserInteractive -and -not ([Console]::IsInputRedirected)
+if ($_isInteractiveForShortcut) {
+    Write-Host ""
+    $scChoice = Read-Host "Create a desktop shortcut to open the Agent Context Dashboard? [Y/n]"
+    if ($scChoice -ne "n" -and $scChoice -ne "N") {
+        Write-Host "Creating shortcut…"
+        Push-Location $ProjectDir
+        try {
+            $scArgs = @("run")
+            if ($uvExtraFlag) { $scArgs += $uvExtraFlag.Trim().Split(" ") }
+            $scArgs += "--directory", $ProjectDir, "python", "scripts/cli.py", "create-shortcut"
+            uv @scArgs
+        } catch {
+            Write-Warning "Could not create shortcut automatically."
+            Write-Host "  Try again later: uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py create-shortcut"
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Host "Skipping desktop shortcut."
+        Write-Host "  Create one later: uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py create-shortcut"
+    }
+} else {
+    Write-Host "Open the dashboard:       uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py open-dashboard"
+    Write-Host "Create desktop shortcut:  uv run ${uvExtraFlag}--directory `"$ProjectDir`" python scripts/cli.py create-shortcut"
+}
