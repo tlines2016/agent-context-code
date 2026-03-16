@@ -62,13 +62,14 @@ export async function copyToClipboard(text: string): Promise<void> {
 
 // ── Formatting ────────────────────────────────────────────────────────────────
 
-interface FormatMarkdownParams {
+export interface FormatMarkdownParams {
   file: string
   lines: string
   kind: string
   score: number
   name?: string
   content_preview?: string
+  start_line?: number
 }
 
 /**
@@ -105,4 +106,60 @@ export function formatAsMarkdown({
   const body = content_preview ? `\`\`\`${lang}\n${content_preview}\n\`\`\`` : ''
 
   return [meta, body].filter(Boolean).join('\n\n')
+}
+
+/**
+ * Return a concise file-path reference including line numbers,
+ * suitable for pasting into an IDE "Go to file" dialog or an AI prompt.
+ *
+ * Prefers the full "start-end" range from `lines` when it is available
+ * (e.g. "10-25" → "src/foo.py:10-25"), falling back to just `start_line`
+ * or the bare file path.
+ */
+export function formatFilePath(
+  file: string,
+  start_line?: number,
+  lines?: string,
+): string {
+  // Use the full range from `lines` when it contains both start and end.
+  if (lines && lines.includes('-')) return `${file}:${lines}`
+  if (start_line !== undefined) return `${file}:${start_line}`
+  if (lines) return `${file}:${lines}`
+  return file
+}
+
+/**
+ * Format a collection of search results as a self-contained AI prompt context
+ * block.  The caller can paste this directly into an AI chat window.
+ *
+ * Output shape:
+ *   The following code snippets are relevant to the query: "..."
+ *
+ *   ### 1. `path/to/file.py` — function `my_func` (lines 10-25, score 87%)
+ *   ```python
+ *   def my_func(): ...
+ *   ```
+ *   ...
+ */
+export function formatAsPromptContext(
+  results: FormatMarkdownParams[],
+  query: string,
+): string {
+  const header = `The following code snippets are relevant to the query: "${query}"\n`
+  const sections = results
+    .map((r, i) => {
+      const lang = r.file.split('.').pop() ?? ''
+      const title = [
+        `### ${i + 1}. \`${r.file}\``,
+        r.name ? `— ${r.kind} \`${r.name}\`` : `— ${r.kind}`,
+        `(lines ${r.lines}, score ${formatScore(r.score)})`,
+      ].join(' ')
+      const body = r.content_preview
+        ? `\`\`\`${lang}\n${r.content_preview}\n\`\`\``
+        : ''
+      return [title, body].filter(Boolean).join('\n')
+    })
+    .join('\n\n')
+
+  return [header, sections].join('\n')
 }
