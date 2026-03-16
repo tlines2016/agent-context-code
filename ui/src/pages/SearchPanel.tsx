@@ -90,6 +90,9 @@ export default function SearchPanel() {
   }
 
   function handleClear() {
+    // Reset the mutation first so any in-flight request's onSuccess callback
+    // does not repopulate results or history after the user has cleared the UI.
+    mutation.reset()
     setQuery('')
     setResults(null)
     queryRef.current?.focus()

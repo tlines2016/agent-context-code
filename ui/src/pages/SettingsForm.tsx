@@ -6,13 +6,20 @@
  * 2. Reranker toggle + settings
  * 3. Idle memory management thresholds
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Settings, Save, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import { api, type SettingsUpdate } from '@/api/client'
 
 export default function SettingsForm() {
   const qc = useQueryClient()
+  // Stable IDs for label↔input associations (required for screen-reader accessibility).
+  const modelId = useId()
+  const rerankerModelId = useId()
+  const recallKId = useId()
+  const minScoreId = useId()
+  const offloadMinId = useId()
+  const unloadMinId = useId()
 
   const { data: settings, isLoading: settingsLoading } = useQuery({
     queryKey: ['settings'],
@@ -96,8 +103,9 @@ export default function SettingsForm() {
           {/* Embedding model */}
           <Section title="Embedding Model" description="The model used to generate code embeddings. Changing this requires re-indexing all projects.">
             <div>
-              <label className="label">Model</label>
+              <label className="label" htmlFor={modelId}>Model</label>
               <select
+                id={modelId}
                 value={modelName}
                 onChange={(e) => setModelName(e.target.value)}
                 className="input"
@@ -136,8 +144,9 @@ export default function SettingsForm() {
             {rerankerEnabled && (
               <div className="space-y-3">
                 <div>
-                  <label className="label">Reranker model</label>
+                  <label className="label" htmlFor={rerankerModelId}>Reranker model</label>
                   <input
+                    id={rerankerModelId}
                     type="text"
                     value={rerankerModel}
                     onChange={(e) => setRerankerModel(e.target.value)}
@@ -147,8 +156,9 @@ export default function SettingsForm() {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label">Recall-k: {recallK}</label>
+                    <label className="label" htmlFor={recallKId}>Recall-k: {recallK}</label>
                     <input
+                      id={recallKId}
                       type="range"
                       min={10}
                       max={200}
@@ -159,8 +169,9 @@ export default function SettingsForm() {
                     />
                   </div>
                   <div>
-                    <label className="label">Min reranker score: {minScore.toFixed(2)}</label>
+                    <label className="label" htmlFor={minScoreId}>Min reranker score: {minScore.toFixed(2)}</label>
                     <input
+                      id={minScoreId}
                       type="range"
                       min={0}
                       max={1}
@@ -179,8 +190,9 @@ export default function SettingsForm() {
           <Section title="Idle Memory Management" description="Release GPU/CPU memory after periods of inactivity. Warm offload moves models to CPU RAM; cold unload fully destroys them.">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="label">Warm offload after: {offloadMin} min</label>
+                <label className="label" htmlFor={offloadMinId}>Warm offload after: {offloadMin} min</label>
                 <input
+                  id={offloadMinId}
                   type="range"
                   min={0}
                   max={120}
@@ -192,8 +204,9 @@ export default function SettingsForm() {
                 <p className="text-xs text-slate-600 mt-1">0 = disabled</p>
               </div>
               <div>
-                <label className="label">Cold unload after: {unloadMin} min</label>
+                <label className="label" htmlFor={unloadMinId}>Cold unload after: {unloadMin} min</label>
                 <input
+                  id={unloadMinId}
                   type="range"
                   min={0}
                   max={120}

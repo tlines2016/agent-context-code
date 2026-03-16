@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 export type ActiveTab = 'search' | 'health' | 'projects' | 'settings'
 
@@ -26,23 +27,37 @@ interface AppStore {
   toggleSidebar: () => void
 }
 
-export const useStore = create<AppStore>((set) => ({
-  activeTab: 'search',
-  setActiveTab: (tab) => set({ activeTab: tab }),
+export const useStore = create<AppStore>()(
+  persist(
+    (set) => ({
+      activeTab: 'search',
+      setActiveTab: (tab) => set({ activeTab: tab }),
 
-  lastQuery: '',
-  setLastQuery: (q) => set({ lastQuery: q }),
+      lastQuery: '',
+      setLastQuery: (q) => set({ lastQuery: q }),
 
-  queryHistory: [],
-  addToHistory: (q) =>
-    set((s) => {
-      const trimmed = q.trim()
-      if (!trimmed) return s
-      // Deduplicate: remove existing entry for same query, then prepend.
-      const filtered = s.queryHistory.filter((h) => h !== trimmed)
-      return { queryHistory: [trimmed, ...filtered].slice(0, MAX_HISTORY) }
+      /** Recent unique queries, newest-first. Capped at MAX_HISTORY entries. */
+      queryHistory: [],
+      addToHistory: (q) =>
+        set((s) => {
+          const trimmed = q.trim()
+          if (!trimmed) return s
+          // Deduplicate: remove existing entry for same query, then prepend.
+          const filtered = s.queryHistory.filter((h) => h !== trimmed)
+          return { queryHistory: [trimmed, ...filtered].slice(0, MAX_HISTORY) }
+        }),
+
+      sidebarOpen: true,
+      toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
     }),
-
-  sidebarOpen: true,
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-}))
+    {
+      name: 'agent-context-ui',
+      // Only persist fields meaningful across page refreshes.
+      partialize: (s) => ({
+        queryHistory: s.queryHistory,
+        lastQuery: s.lastQuery,
+        sidebarOpen: s.sidebarOpen,
+      }),
+    },
+  ),
+)

@@ -42,7 +42,8 @@ export default function ResultCard({ result, index }: ResultCardProps) {
     setTimeout(() => setCopied(null), 2000)
   }
 
-  const scorePercent = Math.round(result.score * 100)
+  // Cap at 100 so the progress bar never overflows when score > 1.0
+  const scorePercent = Math.min(100, Math.round(result.score * 100))
 
   return (
     <div className="card overflow-hidden">
