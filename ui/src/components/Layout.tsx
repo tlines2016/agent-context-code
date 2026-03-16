@@ -65,11 +65,13 @@ export default function Layout({ children }: LayoutProps) {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 space-y-1 p-2 overflow-y-auto">
+        <nav aria-label="Main navigation" className="flex-1 space-y-1 p-2 overflow-y-auto">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
+              aria-current={activeTab === item.id ? 'page' : undefined}
+              aria-label={!sidebarOpen ? item.label : undefined}
               className={cn(
                 'w-full',
                 activeTab === item.id ? 'nav-item-active' : 'nav-item',
@@ -77,7 +79,7 @@ export default function Layout({ children }: LayoutProps) {
               )}
               title={!sidebarOpen ? item.label : undefined}
             >
-              <span className="shrink-0">{item.icon}</span>
+              <span className="shrink-0" aria-hidden="true">{item.icon}</span>
               {sidebarOpen && <span>{item.label}</span>}
             </button>
           ))}
