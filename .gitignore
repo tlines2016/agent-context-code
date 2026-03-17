@@ -32,6 +32,7 @@ share/python-wheels/
 MANIFEST
 .cursor/
 LOCAL.md
+local_docs/**
 
 
 # PyInstaller
@@ -228,4 +229,12 @@ uv.toml
 
 # UI frontend build artifacts and dependencies
 ui/node_modules/
+ui/dist/
+ui_server/static/assets/
+*.tsbuildinfo
+
+# UI dev/local environment
+ui/.env
+ui/.env.local
+ui/.env.*.local
 

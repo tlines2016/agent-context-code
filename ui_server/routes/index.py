@@ -60,7 +60,11 @@ class IndexRequest(BaseModel):
 async def index_status(server=Depends(get_server)) -> dict:
     """Return current index health and statistics."""
     raw = server.get_index_status()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Malformed response from backend: %.200s", raw)
+        raise HTTPException(status_code=502, detail="Backend returned invalid JSON")
     if "error" in data:
         raise HTTPException(status_code=500, detail=data["error"])
     return data
@@ -78,7 +82,11 @@ async def run_index(
         file_patterns=request.file_patterns,
         incremental=request.incremental,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Malformed response from backend: %.200s", raw)
+        raise HTTPException(status_code=502, detail="Backend returned invalid JSON")
     if "error" in data:
         raise HTTPException(status_code=400, detail=data["error"])
     return data
@@ -88,7 +96,11 @@ async def run_index(
 async def clear_index(server=Depends(get_server)) -> dict:
     """Clear the active project's index (vector store, graph, and snapshot)."""
     raw = server.clear_index()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Malformed response from backend: %.200s", raw)
+        raise HTTPException(status_code=502, detail="Backend returned invalid JSON")
     if "error" in data:
         raise HTTPException(status_code=400, detail=data["error"])
     return data

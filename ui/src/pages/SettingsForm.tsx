@@ -6,7 +6,7 @@
  * 2. Reranker toggle + settings
  * 3. Idle memory management thresholds
  */
-import { useState, useEffect, useId } from 'react'
+import { useState, useEffect, useId, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Settings, Save, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import { api, type SettingsUpdate } from '@/api/client'
@@ -264,7 +264,7 @@ export default function SettingsForm() {
 function Section({ title, description, children }: {
   title: string
   description: string
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
     <div className="card p-4 space-y-3">

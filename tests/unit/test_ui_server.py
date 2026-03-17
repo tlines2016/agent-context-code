@@ -5,12 +5,19 @@ without requiring a real CodeSearchServer or any external dependencies.
 """
 
 import json
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 from fastapi.testclient import TestClient
+
+# Use a platform-appropriate absolute path for test fixtures.
+# On Windows, "/fake/project" is not considered absolute by pathlib.
+_FAKE_PROJECT = "C:\\fake\\project" if os.name == "nt" else "/fake/project"
 
 # ---------------------------------------------------------------------------
 # Minimal mock that satisfies the routes' server.* calls
@@ -24,7 +31,7 @@ class _MockServer:
         query = kwargs.get("query", "test query")
         return json.dumps({
             "query": query,
-            "project": "/fake/project",
+            "project": _FAKE_PROJECT,
             "results": [
                 {
                     "file": "src/auth.py",
@@ -44,12 +51,12 @@ class _MockServer:
             "projects": [
                 {
                     "project_name": "my_project",
-                    "project_path": "/fake/project",
+                    "project_path": _FAKE_PROJECT,
                     "project_hash": "deadbeef",
                 }
             ],
             "count": 1,
-            "current_project": "/fake/project",
+            "current_project": _FAKE_PROJECT,
         })
 
     def switch_project(self, project_path: str) -> str:
@@ -75,11 +82,24 @@ class _MockServer:
 
 @pytest.fixture(scope="module")
 def client():
-    """Create a TestClient backed by a mock server."""
+    """Create a TestClient backed by a mock server with isolated storage."""
     from ui_server.app import create_app
-    app = create_app(_MockServer())
-    with TestClient(app) as c:
-        yield c
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        # Write a minimal install_config.json so settings routes don't error.
+        (tmp_path / "install_config.json").write_text("{}", encoding="utf-8")
+
+        with (
+            patch("ui_server.routes.settings.get_storage_dir", return_value=tmp_path),
+            patch("ui_server.routes.settings.load_local_install_config", return_value={}),
+            patch("ui_server.routes.settings.save_local_install_config"),
+            patch("ui_server.routes.settings.save_reranker_config"),
+            patch("ui_server.routes.settings.save_idle_config"),
+        ):
+            app = create_app(_MockServer())
+            with TestClient(app) as c:
+                yield c
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +212,7 @@ class TestProjects:
     def test_switch_project(self, client: TestClient):
         resp = client.post(
             "/api/v1/projects/switch",
-            json={"project_path": "/fake/project"},
+            json={"project_path": _FAKE_PROJECT},
         )
         assert resp.status_code == 200
         assert resp.json()["success"] is True
@@ -227,7 +247,7 @@ class TestIndex:
     def test_run_index(self, client: TestClient):
         resp = client.post(
             "/api/v1/index/run",
-            json={"directory_path": "/fake/project"},
+            json={"directory_path": _FAKE_PROJECT},
         )
         assert resp.status_code == 200
         assert resp.json()["success"] is True
@@ -257,14 +277,14 @@ class TestIndex:
         patterns = [f"**/*.ext{i}" for i in range(51)]
         resp = client.post(
             "/api/v1/index/run",
-            json={"directory_path": "/fake/project", "file_patterns": patterns},
+            json={"directory_path": _FAKE_PROJECT, "file_patterns": patterns},
         )
         assert resp.status_code == 422
 
     def test_run_index_accepts_valid_file_patterns(self, client: TestClient):
         resp = client.post(
             "/api/v1/index/run",
-            json={"directory_path": "/fake/project", "file_patterns": ["**/*.py", "**/*.ts"]},
+            json={"directory_path": _FAKE_PROJECT, "file_patterns": ["**/*.py", "**/*.ts"]},
         )
         assert resp.status_code == 200
 

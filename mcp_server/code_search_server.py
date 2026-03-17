@@ -1060,7 +1060,17 @@ class CodeSearchServer:
             index_manager = self.get_index_manager()
             stats = index_manager.get_stats(summary_only=True)
 
-            model_info = self.embedder().get_model_info()
+            embedder = self.embedder()
+            model_info = embedder.get_model_info()
+
+            # When the model hasn't been lazily loaded yet, supplement with
+            # config-level information so the dashboard can still display the
+            # model name and configured dimension.
+            if model_info.get("status") == "not_loaded":
+                model_info["model_name"] = embedder.model_config.model_name
+                dim = getattr(embedder.model_config, "embedding_dimension", None)
+                if dim:
+                    model_info["embedding_dimension"] = dim
 
             response = {
                 "index_statistics": stats,

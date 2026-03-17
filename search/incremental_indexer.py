@@ -662,25 +662,25 @@ class IncrementalIndexer:
         return metadata
     
     def needs_reindex(self, project_path: str, max_age_minutes: float = 5) -> bool:
-        """Check if a project needs reindexing.
-        
+        """Check if a project needs an incremental reindex.
+
+        Always runs content-based change detection so that recently modified
+        files are never missed.  The ``max_age_minutes`` parameter is unused
+        in the current implementation but kept for API compatibility.
+
         Args:
             project_path: Path to project
-            max_age_minutes: Maximum age of snapshot in minutes (default 5)
-            
+            max_age_minutes: Reserved for future use (kept for API compat)
+
         Returns:
-            True if reindex is needed
+            True if an incremental reindex should be attempted
         """
-        # No snapshot means needs index
+        # No snapshot means the project has never been indexed
         if not self.snapshot_manager.has_snapshot(project_path):
             return True
-        
-        # Check snapshot age (convert minutes to seconds)
-        age = self.snapshot_manager.get_snapshot_age(project_path)
-        if age and age > max_age_minutes * 60:
-            return True
-        
-        # Quick check for changes
+
+        # Content-based change detection — always check so fresh edits are
+        # picked up regardless of how recently the last reindex ran.
         return self.change_detector.quick_check(project_path)
     
     def auto_reindex_if_needed(
@@ -690,12 +690,16 @@ class IncrementalIndexer:
         max_age_minutes: float = 5,
         lock_timeout: Optional[float] = None,
     ) -> IncrementalIndexResult:
-        """Automatically reindex if the index is stale.
+        """Automatically perform an incremental reindex if changes are detected.
+
+        This never triggers a full (clear + rebuild) reindex — only incremental
+        updates for added, modified, or removed files.  Full reindexing should
+        only happen via explicit user action (CLI or UI "Clear Index" button).
 
         Args:
             project_path: Path to project
             project_name: Optional project name
-            max_age_minutes: Maximum age before auto-reindex (default 5 minutes)
+            max_age_minutes: Re-check interval in minutes (default 5)
             lock_timeout: Override lock timeout passed through to
                 ``incremental_index()``.
 
@@ -706,8 +710,37 @@ class IncrementalIndexer:
         start_time = time.time()
 
         if self.needs_reindex(project_path, max_age_minutes):
-            logger.info(f"Auto-reindexing {project_path} (index older than {max_age_minutes} minutes)")
-            return self.incremental_index(project_path, project_name, lock_timeout=lock_timeout)
+            # Guard: if the indexing config changed (e.g. model switch), a full
+            # reindex is required but auto-reindex must never do that silently.
+            # Bail out with a warning instead of mixing incompatible embeddings.
+            indexing_config = self.chunker.get_indexing_config_signature()
+            snapshot_metadata = self.snapshot_manager.load_metadata(project_path) or {}
+            if (
+                snapshot_metadata.get('indexing_config') is not None
+                and snapshot_metadata.get('indexing_config') != indexing_config
+            ):
+                logger.warning(
+                    "Indexing config changed for %s — a full reindex is "
+                    "required.  Run 'index_directory' or 'Clear Index' from "
+                    "the dashboard to rebuild with the new config.",
+                    project_name or project_path,
+                )
+                return IncrementalIndexResult(
+                    files_added=0,
+                    files_removed=0,
+                    files_modified=0,
+                    chunks_added=0,
+                    chunks_removed=0,
+                    time_taken=time.time() - start_time,
+                    success=True,
+                )
+
+            logger.info(f"Auto-reindexing {project_path} (incremental — changes detected)")
+            return self.incremental_index(
+                project_path, project_name,
+                force_full=False,
+                lock_timeout=lock_timeout,
+            )
         else:
             logger.debug(f"Index for {project_path} is fresh, skipping reindex")
             return IncrementalIndexResult(

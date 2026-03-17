@@ -11,7 +11,7 @@
  * - Clear button to reset the search
  * - aria-live regions for accessible status announcements
  */
-import { useState, useRef, useEffect, useId } from 'react'
+import { useState, useRef, useEffect, useId, type KeyboardEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Search, SlidersHorizontal, FileDown, Loader2, X, BrainCircuit } from 'lucide-react'
 import { api, type SearchResponse } from '@/api/client'
@@ -52,6 +52,7 @@ export default function SearchPanel() {
   const [exportedAll, setExportedAll] = useState<'markdown' | 'prompt' | null>(null)
   const queryRef = useRef<HTMLTextAreaElement>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
+  const requestIdRef = useRef(0)
   const statusId = useId()
   const sliderId = useId()
 
@@ -63,15 +64,19 @@ export default function SearchPanel() {
   const mutation = useMutation({
     // Pass the query as an explicit argument so history-triggered searches
     // are never affected by stale React state from a concurrent setState call.
-    mutationFn: (searchQuery: string) =>
-      api.search({
+    mutationFn: (searchQuery: string) => {
+      const id = ++requestIdRef.current
+      return api.search({
         query: searchQuery,
         k,
         file_pattern: filePattern || undefined,
         chunk_type: chunkType || undefined,
         include_context: true,
-      }),
-    onSuccess: (data, searchQuery) => {
+      }).then((data) => ({ data, id }))
+    },
+    onSuccess: ({ data, id }, searchQuery) => {
+      // Discard if a newer request or a clear has occurred since this one started.
+      if (id !== requestIdRef.current) return
       setResults(data)
       setLastQuery(searchQuery)
       addToHistory(searchQuery)
@@ -83,15 +88,16 @@ export default function SearchPanel() {
     mutation.mutate(query)
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
       handleSearch()
     }
   }
 
   function handleClear() {
-    // Reset the mutation first so any in-flight request's onSuccess callback
-    // does not repopulate results or history after the user has cleared the UI.
+    // Invalidate any in-flight request so its onSuccess callback is discarded.
+    requestIdRef.current++
     mutation.reset()
     setQuery('')
     setResults(null)
@@ -117,7 +123,11 @@ export default function SearchPanel() {
         start_line: r.start_line,
       }))
       .join('\n\n---\n\n')
-    await copyToClipboard(md)
+    try {
+      await copyToClipboard(md)
+    } catch {
+      return
+    }
     setExportedAll('markdown')
     setTimeout(() => setExportedAll(null), 2000)
   }
@@ -136,7 +146,11 @@ export default function SearchPanel() {
       })),
       results.query,
     )
-    await copyToClipboard(ctx)
+    try {
+      await copyToClipboard(ctx)
+    } catch {
+      return
+    }
     setExportedAll('prompt')
     setTimeout(() => setExportedAll(null), 2000)
   }

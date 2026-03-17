@@ -1,7 +1,7 @@
 /**
  * HealthDashboard — shows index statistics, sync status, and re-index controls.
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart,
@@ -179,11 +179,17 @@ export default function HealthDashboard() {
         .map(([name, value]) => ({ name, value }))
     : []
 
-  const typeData = stats.chunk_types
-    ? Object.entries(stats.chunk_types)
-        .sort(([, a], [, b]) => b - a)
-        .map(([name, value]) => ({ name, value }))
-    : []
+  const typeData = (() => {
+    if (!stats.chunk_types) return []
+    const sorted = Object.entries(stats.chunk_types).sort(([, a], [, b]) => b - a)
+    const top = sorted.slice(0, 8).map(([name, value]) => ({ name, value }))
+    const rest = sorted.slice(8)
+    if (rest.length > 0) {
+      const otherTotal = rest.reduce((sum, [, v]) => sum + v, 0)
+      top.push({ name: `Other (${rest.length})`, value: otherTotal })
+    }
+    return top
+  })()
 
   return (
     <div className="p-6 space-y-6">
@@ -266,7 +272,7 @@ export default function HealthDashboard() {
       {typeData.length > 0 && (
         <div className="card p-4">
           <h2 className="text-sm font-medium text-slate-300 mb-3">Chunks by Type</h2>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie
                 data={typeData}
@@ -274,11 +280,11 @@ export default function HealthDashboard() {
                 nameKey="name"
                 cx="50%"
                 cy="50%"
-                outerRadius={80}
+                outerRadius={90}
                 label={({ name, percent }) =>
-                  `${name} ${(percent * 100).toFixed(0)}%`
+                  percent >= 0.03 ? `${name} ${(percent * 100).toFixed(0)}%` : ''
                 }
-                labelLine={{ stroke: '#475569' }}
+                labelLine={{ stroke: '#475569', strokeWidth: 1 }}
               >
                 {typeData.map((_, i) => (
                   <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -309,7 +315,7 @@ export default function HealthDashboard() {
   )
 }
 
-function StatCard({ label, value, small }: { label: string; value: React.ReactNode; small?: boolean }) {
+function StatCard({ label, value, small }: { label: string; value: ReactNode; small?: boolean }) {
   return (
     <div className="card px-4 py-3">
       <p className="text-xs text-slate-500 mb-1">{label}</p>
