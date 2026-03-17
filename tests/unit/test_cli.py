@@ -1,6 +1,7 @@
 """Unit tests for the CLI help and diagnostics tool."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -353,8 +354,9 @@ class TestDashboardCommands:
         assert info_plist.exists(), "Expected Info.plist inside .app bundle"
         app_run = app_bundle / "Contents" / "MacOS" / "AppRun"
         assert app_run.exists(), "Expected AppRun executable inside .app bundle"
-        # Verify it's executable
-        assert app_run.stat().st_mode & 0o111, "AppRun should be executable"
+        # Verify it's executable (skip on Windows — NTFS ignores chmod)
+        if os.name != "nt":
+            assert app_run.stat().st_mode & 0o111, "AppRun should be executable"
 
     def test_ui_port_falls_back_to_default_on_bad_env_var(self, monkeypatch, capsys):
         """_ui_port() must fall back to 7432 (not raise) when env var is not an integer."""

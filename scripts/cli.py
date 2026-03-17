@@ -29,6 +29,7 @@ import json
 import importlib
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1841,7 +1842,10 @@ def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
         exec_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
     else:
         extra_parts = f"{extra_flag} " if extra_flag else ""
-        exec_cmd = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
+        exec_cmd = f"{shlex.quote(uv_bin)} run {extra_parts}--directory {shlex.quote(str(install_dir))} python ui_server/server.py"
+
+    # Escape single quotes for the outer bash -c '...' wrapper in the .desktop Exec line.
+    exec_cmd_escaped = exec_cmd.replace("'", "'\\''")
 
     desktop_content = (
         "[Desktop Entry]\n"
@@ -1850,7 +1854,7 @@ def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
         "Name=Agent Context Dashboard\n"
         "GenericName=Code Search Dashboard\n"
         "Comment=Open the Agent Context local semantic code search dashboard\n"
-        f"Exec=bash -c '{exec_cmd}'\n"
+        f"Exec=bash -c '{exec_cmd_escaped}'\n"
         "Icon=utilities-terminal\n"
         "Terminal=false\n"
         "Categories=Development;Utility;\n"
@@ -1904,7 +1908,7 @@ def _create_shortcut_macos() -> None:
         launch_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
     else:
         extra_parts = f"{extra_flag} " if extra_flag else ""
-        launch_cmd = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
+        launch_cmd = f"{shlex.quote(uv_bin)} run {extra_parts}--directory {shlex.quote(str(install_dir))} python ui_server/server.py"
 
     app_dir = Path.home() / "Applications" / "Agent Context Dashboard.app"
     macos_dir = app_dir / "Contents" / "MacOS"
@@ -2017,7 +2021,7 @@ def _create_shortcut_wsl() -> None:
     extra_parts = f"{extra_flag} " if extra_flag else ""
 
     # The server runs inside WSL, so we target wsl.exe from the Windows side.
-    wsl_launch = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
+    wsl_launch = f"{shlex.quote(uv_bin)} run {extra_parts}--directory {shlex.quote(str(install_dir))} python ui_server/server.py"
 
     def _ps_str(s: str) -> str:
         return s.replace("'", "''")

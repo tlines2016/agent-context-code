@@ -61,6 +61,24 @@ def _parse_port(value: str) -> int:
     return port
 
 
+def _env_port_default() -> int:
+    """Read port from CODE_SEARCH_UI_PORT env var, falling back to 7432."""
+    raw = os.environ.get("CODE_SEARCH_UI_PORT", "7432")
+    try:
+        port = int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "CODE_SEARCH_UI_PORT=%r is not a valid integer; using default 7432.", raw
+        )
+        return 7432
+    if not (1 <= port <= 65535):
+        logging.getLogger(__name__).warning(
+            "CODE_SEARCH_UI_PORT=%d is out of range (1-65535); using default 7432.", port
+        )
+        return 7432
+    return port
+
+
 def main() -> None:
     """Launch the FastAPI UI server with uvicorn."""
     parser = argparse.ArgumentParser(
@@ -76,7 +94,7 @@ def main() -> None:
     parser.add_argument(
         "--port",
         type=_parse_port,
-        default=int(os.environ.get("CODE_SEARCH_UI_PORT", "7432")),
+        default=_env_port_default(),
         help="TCP port to serve on (default: 7432 or CODE_SEARCH_UI_PORT env var)",
     )
     parser.add_argument(

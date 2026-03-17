@@ -93,7 +93,11 @@ async def search(
         project_path=request.project_path,
         max_results_per_file=request.max_results_per_file,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Malformed response from backend: %.200s", raw)
+        raise HTTPException(status_code=502, detail="Backend returned invalid JSON")
 
     if "error" in data:
         raise HTTPException(status_code=400, detail=data["error"])

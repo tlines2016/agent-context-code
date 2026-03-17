@@ -7,12 +7,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+import json
+
 from graph.code_graph import (
     CodeGraph,
     EDGE_CALLS,
     EDGE_CONTAINS,
     EDGE_IMPORTS,
     EDGE_INHERITS,
+    MAX_CALLEE_AMBIGUITY,
 )
 
 
@@ -415,3 +418,160 @@ class TestStats:
         stats = populated_graph.get_stats()
         assert stats["total_symbols"] == 0
         assert stats["total_edges"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Bounded subgraph (Fix 1)
+# ---------------------------------------------------------------------------
+
+class TestBoundedSubgraph:
+
+    def test_respects_max_edges(self, graph):
+        """max_edges caps the returned edge count."""
+        graph.upsert_symbol("seed", "Seed", "class", "/a.py", 1, 5)
+        for i in range(20):
+            nid = f"n{i}"
+            graph.upsert_symbol(nid, f"Node{i}", "function", "/a.py", 10 + i, 15 + i)
+            graph.add_edge("seed", nid, EDGE_CALLS)
+        graph.commit()
+
+        result = graph.get_connected_subgraph("seed", max_depth=1, max_edges=5)
+        assert len(result["edges"]) == 5
+        assert result["truncated"] is True
+        assert result["total_edges_found"] == 20
+
+    def test_priority_order_when_truncating(self, graph):
+        """contains edges are kept before calls edges when truncating."""
+        graph.upsert_symbol("seed", "Seed", "class", "/a.py", 1, 5)
+        # 2 contains edges
+        for i in range(2):
+            nid = f"child{i}"
+            graph.upsert_symbol(nid, f"Child{i}", "method", "/a.py", 10 + i, 15 + i)
+            graph.add_edge("seed", nid, EDGE_CONTAINS)
+        # 5 calls edges
+        for i in range(5):
+            nid = f"callee{i}"
+            graph.upsert_symbol(nid, f"Callee{i}", "function", "/b.py", 10 + i, 15 + i)
+            graph.add_edge("seed", nid, EDGE_CALLS)
+        graph.commit()
+
+        result = graph.get_connected_subgraph("seed", max_depth=1, max_edges=3)
+        edge_types = [e["edge_type"] for e in result["edges"]]
+        assert edge_types.count(EDGE_CONTAINS) == 2
+        assert edge_types.count(EDGE_CALLS) == 1
+        assert result["omitted_by_type"][EDGE_CALLS] == 4
+
+    def test_no_truncation_when_under_limit(self, graph):
+        """When edges fit within max_edges, truncated is False."""
+        graph.upsert_symbol("seed", "Seed", "class", "/a.py", 1, 5)
+        for i in range(5):
+            nid = f"n{i}"
+            graph.upsert_symbol(nid, f"N{i}", "function", "/a.py", 10 + i, 15 + i)
+            graph.add_edge("seed", nid, EDGE_CALLS)
+        graph.commit()
+
+        result = graph.get_connected_subgraph("seed", max_depth=1, max_edges=50)
+        assert result["truncated"] is False
+        assert result["omitted_by_type"] == {}
+        assert result["total_edges_found"] == 5
+
+    def test_edge_type_filter(self, graph):
+        """edge_type_filter restricts traversal to one edge type."""
+        graph.upsert_symbol("seed", "Seed", "class", "/a.py", 1, 5)
+        for i in range(3):
+            nid = f"callee{i}"
+            graph.upsert_symbol(nid, f"Callee{i}", "function", "/b.py", 10 + i, 15 + i)
+            graph.add_edge("seed", nid, EDGE_CALLS)
+        for i in range(2):
+            nid = f"child{i}"
+            graph.upsert_symbol(nid, f"Child{i}", "method", "/a.py", 20 + i, 25 + i)
+            graph.add_edge("seed", nid, EDGE_CONTAINS)
+        graph.commit()
+
+        result = graph.get_connected_subgraph("seed", max_depth=1, edge_type_filter="contains")
+        assert all(e["edge_type"] == EDGE_CONTAINS for e in result["edges"])
+        assert len(result["edges"]) == 2
+
+    def test_symbols_consistent_with_edges(self, graph):
+        """After truncation, symbols match the kept edges plus seed."""
+        graph.upsert_symbol("seed", "Seed", "class", "/a.py", 1, 5)
+        for i in range(10):
+            nid = f"n{i}"
+            graph.upsert_symbol(nid, f"N{i}", "function", "/a.py", 10 + i, 15 + i)
+            graph.add_edge("seed", nid, EDGE_CALLS)
+        graph.commit()
+
+        result = graph.get_connected_subgraph("seed", max_depth=1, max_edges=3)
+        symbol_ids = {s["chunk_id"] for s in result["symbols"]}
+        # Seed is always included
+        assert "seed" in symbol_ids
+        # Every edge endpoint must appear in symbols
+        for edge in result["edges"]:
+            assert edge["source_chunk_id"] in symbol_ids
+            assert edge["target_chunk_id"] in symbol_ids
+        # No orphaned symbols (except seed)
+        edge_ids = set()
+        for edge in result["edges"]:
+            edge_ids.add(edge["source_chunk_id"])
+            edge_ids.add(edge["target_chunk_id"])
+        for sid in symbol_ids:
+            assert sid in edge_ids or sid == "seed"
+
+
+# ---------------------------------------------------------------------------
+# Call edge ambiguity guard (Fix 2)
+# ---------------------------------------------------------------------------
+
+class TestCallEdgeAmbiguity:
+
+    def test_skips_ambiguous_names(self, graph):
+        """Names matching more than MAX_CALLEE_AMBIGUITY symbols are skipped."""
+        # Create MAX_CALLEE_AMBIGUITY + 1 symbols all named "helper"
+        for i in range(MAX_CALLEE_AMBIGUITY + 1):
+            graph.upsert_symbol(
+                f"helper_{i}", "helper", "function", f"/v{i}/lib.py", 1, 10,
+            )
+        # Create a caller
+        graph.upsert_symbol(
+            "caller", "caller_fn", "function", "/main.py", 1, 10,
+            metadata_json=json.dumps({"calls": ["helper"]}),
+        )
+        graph.commit()
+        new_edges = graph.resolve_call_edges()
+        assert new_edges == 0
+
+    def test_allows_non_ambiguous_names(self, graph):
+        """Names within the ambiguity threshold produce edges normally."""
+        for i in range(3):
+            graph.upsert_symbol(
+                f"helper_{i}", "helper", "function", f"/v{i}/lib.py", 1, 10,
+            )
+        graph.upsert_symbol(
+            "caller", "caller_fn", "function", "/main.py", 1, 10,
+            metadata_json=json.dumps({"calls": ["helper"]}),
+        )
+        graph.commit()
+        new_edges = graph.resolve_call_edges()
+        assert new_edges == 3
+
+    def test_mixed_ambiguity(self, graph):
+        """Ambiguous names are skipped while non-ambiguous names create edges."""
+        # 10 symbols named "generic" (exceeds threshold)
+        for i in range(MAX_CALLEE_AMBIGUITY + 2):
+            graph.upsert_symbol(
+                f"generic_{i}", "generic", "function", f"/v{i}/util.py", 1, 10,
+            )
+        # 2 symbols named "specific" (under threshold)
+        for i in range(2):
+            graph.upsert_symbol(
+                f"specific_{i}", "specific", "function", f"/lib{i}.py", 1, 10,
+            )
+        # Caller calls both
+        graph.upsert_symbol(
+            "caller", "caller_fn", "function", "/main.py", 1, 10,
+            metadata_json=json.dumps({"calls": ["generic", "specific"]}),
+        )
+        graph.commit()
+        new_edges = graph.resolve_call_edges()
+        # Only "specific" edges created (2), none for "generic"
+        assert new_edges == 2

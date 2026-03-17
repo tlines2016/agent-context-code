@@ -37,7 +37,11 @@ export default function ResultCard({ result, index }: ResultCardProps) {
       text = result.content_preview ?? result.snippet ?? ''
     }
 
-    await copyToClipboard(text)
+    try {
+      await copyToClipboard(text)
+    } catch {
+      return
+    }
     setCopied(type)
     setTimeout(() => setCopied(null), 2000)
   }

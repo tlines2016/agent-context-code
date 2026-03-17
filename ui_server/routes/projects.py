@@ -34,7 +34,11 @@ class SwitchProjectRequest(BaseModel):
 async def list_projects(server=Depends(get_server)) -> dict:
     """Return all indexed projects with their metadata."""
     raw = server.list_projects()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Malformed response from backend: %.200s", raw)
+        raise HTTPException(status_code=502, detail="Backend returned invalid JSON")
     if "error" in data:
         raise HTTPException(status_code=500, detail=data["error"])
     return data
@@ -47,7 +51,11 @@ async def switch_project(
 ) -> dict:
     """Set the active project by path."""
     raw = server.switch_project(request.project_path)
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("Malformed response from backend: %.200s", raw)
+        raise HTTPException(status_code=502, detail="Backend returned invalid JSON")
     if "error" in data:
         raise HTTPException(status_code=400, detail=data["error"])
     return data

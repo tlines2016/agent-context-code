@@ -275,6 +275,8 @@ class TestSearchAutoReindexLockTimeout:
         indexer = _make_indexer()
         indexer.snapshot_manager.has_snapshot.return_value = True
         indexer.snapshot_manager.get_snapshot_age.return_value = 999  # stale
+        # Ensure the indexing config matches so auto-reindex doesn't bail out
+        indexer.snapshot_manager.load_metadata.return_value = {"indexing_config": {}}
 
         with patch.object(indexer, "incremental_index") as mock_index:
             mock_index.return_value = IncrementalIndexResult(

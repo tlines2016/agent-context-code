@@ -1,8 +1,7 @@
 # CLAUDE.md
 
-> **Scope:** This file is for the **source checkout / development copy** of
-> `agent-context-local`. If you're troubleshooting a **PyPI install**
-> (`uv tool install agent-context-local`), see the [README](README.md) instead.
+> **Scope:** Source checkout of `agent-context-local`. For PyPI install
+> troubleshooting (`uv tool install agent-context-local`), see [README](README.md).
 
 ## Quick Reference
 
@@ -13,10 +12,16 @@ uv run python -m pytest tests/unit/test_cli.py -v
 uv run python -m pytest tests/test_lancedb_schema.py -v
 ```
 
-## Code Search
+## Using Code Search on This Project
 
-This project is indexed. Use `search_code` before reading files when
-exploring unfamiliar areas, investigating bugs, or scoping changes.
+This project is indexed. When you're exploring unfamiliar code, investigating
+a bug, or scoping a change, `search_code` can save you significant time
+compared to manual file reading — it finds relevant code by meaning, not just
+keywords. Use it when it would help; skip it when you already know where to look.
+
+**When it helps most:** Understanding how a feature works across files, finding
+where a concept is implemented, locating callers/callees of a function, or
+discovering related code you didn't know existed.
 
 | Area | What lives here |
 |------|----------------|
@@ -27,8 +32,10 @@ exploring unfamiliar areas, investigating bugs, or scoping changes.
 | `mcp_server/` | MCP tool surface — `code_search_server.py`, `code_search_mcp.py`, `strings.yaml` |
 | `reranking/` | Opt-in reranker — `reranker.py`, `reranker_catalog.py` |
 | `scripts/` | Install, uninstall, CLI — `install.sh`, `install.ps1`, `cli.py` |
+| `ui/` | React dashboard frontend |
+| `ui_server/` | Dashboard backend server |
 
-Proven queries:
+**Query examples** (use code vocabulary, not natural language questions):
 
 ```
 search_code("tree sitter chunk extract metadata")        → chunking/base_chunker.py
@@ -39,12 +46,12 @@ search_code("embedding model load device dtype float16") → embeddings/sentence
 search_code("reranker causal LM prompt build")           → reranking/reranker.py
 ```
 
-After finding a chunk, use `get_graph_context(chunk_id)` to map sibling
-methods without reading the file. Use `find_similar_code(chunk_id)` to
-find other implementations of the same interface.
+**Drill-down:** After finding a chunk, `get_graph_context(chunk_id, max_depth=1)`
+maps sibling methods and parent classes. `find_similar_code(chunk_id)` finds
+other implementations of the same interface.
 
-Scores >= 0.80 are reliable. Below 0.40, rephrase using method/class names
-instead of natural language descriptions.
+**Score calibration:** >= 0.80 is reliable. Below 0.40, rephrase using
+method/class names instead of natural-language descriptions.
 
 ## Architecture
 
@@ -59,6 +66,14 @@ Key design rules:
   Keep this two-tier model — don't merge them.
 - Snapshot metadata only advances when both vector and graph stores succeed (consistency barrier).
 - Graph enrichment is non-mutating — never creates graph DB files on read paths.
+- `get_connected_subgraph()` returns edges prioritized by signal value (`contains` > `inherits` > `calls`),
+  capped at `max_edges` (default 50). Response includes truncation metadata when capped.
+- `resolve_call_edges()` skips ambiguous names (> `MAX_CALLEE_AMBIGUITY` matches) to reduce noise
+  in versioned or large codebases.
+- Graph edge resolution is two-pass: `contains` edges are inserted per-file inside `index_file_chunks()`.
+  `inherits` and `calls` edges are resolved globally after all files are indexed — `resolve_cross_file_edges()`
+  then `resolve_call_edges()` run last in both `_full_index()` and `incremental_index()`. New edge types
+  must follow this same two-pass pattern.
 
 ## Storage
 
@@ -85,11 +100,24 @@ claude mcp add code-search --scope user -- uv run --directory "$env:LOCALAPPDATA
 
 GPU machines: add `--extra cu128` (or `cu126`) after `uv run`.
 
-## Working Rules
+## Testing
 
 - Run tests after each logical change. Don't batch all changes and test at the end.
+- `tests/unit/` — fast, no external deps. `tests/integration/` — needs models/indexes.
+- `tests/run_tests.py` runs both suites. Use `-m pytest <path> -v` for targeted runs.
+- Known: `test_prereqs_sh.py` skips on Windows (shell scripts). This is expected.
+- When mocking `get_connected_subgraph()`, the return dict must include
+  `total_edges_found`, `truncated`, and `omitted_by_type` alongside `symbols`/`edges`.
+
+## Working Rules
+
 - `mcp_server/strings.yaml` is deliberately tight — read `mcp_server/AGENTS.md` before editing.
   Every sentence must pass: "Would removing this cause an agent to make a mistake?"
+  These descriptions are loaded into agent context on every tool call — minimize token cost.
 - Keep docs and installer messaging aligned with actual behavior.
 - When modifying setup flow, update `README.md`, installers, and `scripts/cli.py` together.
 - Prefer compatibility-preserving changes over path/command renames.
+- When modifying `graph/code_graph.py`, keep the `EDGE_PRIORITY` dict and `MAX_CALLEE_AMBIGUITY`
+  constant in sync with any new edge types added.
+- All MCP tool methods in `code_search_server.py` must return `json.dumps(...)` as a string, not a
+  raw dict. MCP clients expect string payloads; returning a dict silently breaks on some clients.
