@@ -170,6 +170,23 @@ If installed via PyPI, use `agent-context-local <command>`.
 | `agent-context-local mcp-check` | Verify MCP server registration |
 | `agent-context-local troubleshoot` | Interactive HuggingFace auth and model download help |
 
+### Web Dashboard
+
+Agent Context includes a local web dashboard for browsing projects, running searches, and managing settings in a browser UI.
+
+| Command | Description |
+|---------|-------------|
+| `agent-context-local open-dashboard` | Start the dashboard server (if not already running) and open it in your browser |
+| `agent-context-local create-shortcut` | Create a platform-specific desktop shortcut / launcher for the dashboard |
+
+**Shortcut types created:**
+- **Linux** — XDG `.desktop` entry in `~/.local/share/applications/` (shows in your app menu) and `~/Desktop/` if it exists
+- **macOS** — `.app` bundle in `~/Applications/` (drag to Dock for one-click access)
+- **Windows** — `.lnk` shortcut on the Desktop
+- **WSL** — Linux app-menu entry *and* a Windows Desktop `.lnk` via PowerShell
+
+The installer will also offer to create a shortcut for you at the end of the install process.
+
 ### Model management
 
 | Command | Description |

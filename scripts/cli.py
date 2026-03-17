@@ -333,6 +333,8 @@ def cmd_help() -> None:
         ("version", "Print version and platform info"),
         ("status", "Show index statistics and active project info"),
         ("paths", "Show all paths used by the tool"),
+        ("open-dashboard", "Launch the web dashboard and open in browser"),
+        ("create-shortcut", "Create a desktop shortcut for the dashboard"),
         ("setup-guide", "Print step-by-step setup instructions for your OS"),
         ("setup-mcp", "MCP registration instructions for all supported clients"),
         ("gpu-setup", "Detect GPU and install matching PyTorch build"),
@@ -1683,6 +1685,368 @@ def cmd_config_idle(kind: str, raw_minutes: str) -> None:
     print("Restart the MCP server for the change to take effect.")
 
 
+# ── UI Dashboard commands ─────────────────────────────────────────────
+
+# Default port matches ui_server/server.py and CODE_SEARCH_UI_PORT.
+_DEFAULT_UI_PORT = 7432
+
+
+def _ui_server_cmd_parts() -> list[str]:
+    """Build the ``uv run`` command list for the UI server.
+
+    Uses the installed ``agent-context-local-ui`` entry-point when available;
+    falls back to ``uv run ... python ui_server/server.py`` for source checkouts.
+    """
+    if is_installed_package() and shutil.which("agent-context-local-ui"):
+        return ["agent-context-local-ui"]
+    install_dir = get_default_install_dir()
+    extra_flag = _gpu_extra_flag().strip()
+    cmd: list[str] = ["uv", "run"]
+    if extra_flag:
+        cmd += extra_flag.split()
+    cmd += ["--directory", str(install_dir), "python", "ui_server/server.py"]
+    return cmd
+
+
+def _ui_port() -> int:
+    """Return the configured UI server port (``CODE_SEARCH_UI_PORT`` or 7432).
+
+    Falls back to the default port and prints a warning if the env value is
+    not a valid integer so ``open-dashboard`` never crashes on bad config.
+    """
+    raw = os.environ.get("CODE_SEARCH_UI_PORT", "")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            print(yellow(
+                f"Warning: CODE_SEARCH_UI_PORT={raw!r} is not a valid integer — "
+                f"using default port {_DEFAULT_UI_PORT}."
+            ))
+    return _DEFAULT_UI_PORT
+
+
+def _is_dashboard_running(port: int) -> bool:
+    """Return True if a server is already accepting connections on *port*."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _build_launch_cmd_str() -> str:
+    """Return the launch command as a single printable string."""
+    return " ".join(_ui_server_cmd_parts())
+
+
+def cmd_open_dashboard() -> None:
+    """Launch the Agent Context web dashboard and open it in the default browser.
+
+    If the server is already running on the configured port the browser is
+    opened directly without starting a second instance.
+    """
+    port = _ui_port()
+    url = f"http://127.0.0.1:{port}"
+
+    if _is_dashboard_running(port):
+        print(f"{green('✓')} Dashboard already running at {cyan(url)}")
+        print("  Opening browser…")
+    else:
+        # Start the server as an independent background process so the CLI
+        # returns immediately without blocking the terminal.
+        cmd = _ui_server_cmd_parts() + ["--no-browser"]
+        print("  Starting dashboard server…")
+        if is_windows():
+            proc = subprocess.Popen(
+                cmd,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW — avoids console popup
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,  # detach from terminal so it keeps running
+            )
+        print(f"  Server PID {proc.pid} — waiting for it to become ready…")
+
+        # Poll until the server accepts connections (up to 10 s).
+        import time
+        deadline = time.monotonic() + 10.0
+        started = False
+        while time.monotonic() < deadline:
+            time.sleep(0.4)
+            if _is_dashboard_running(port):
+                started = True
+                break
+
+        if not started:
+            install_dir = get_default_install_dir()
+            extra = _gpu_extra_flag()
+            print(red("✗ Dashboard did not start within 10 seconds."))
+            print(f"  Start it manually: {cyan(f'uv run {extra}--directory {install_dir} python ui_server/server.py')}")
+            return
+
+        print(f"{green('✓')} Dashboard running at {cyan(url)}")
+        print("  Opening browser…")
+
+    import webbrowser
+    webbrowser.open(url)
+    print(f"  If the browser does not open, navigate to: {cyan(url)}")
+
+
+def cmd_create_shortcut() -> None:
+    """Create a desktop shortcut / application launcher for the Agent Context Dashboard.
+
+    Creates a platform-appropriate shortcut so the dashboard can be launched
+    without opening a terminal:
+
+    - **Linux**   — XDG ``.desktop`` file in ``~/.local/share/applications/``
+                    (appears in the application menu).  Also placed on
+                    ``~/Desktop/`` when that directory exists.
+    - **macOS**   — Minimal ``.app`` bundle in ``~/Applications/``.
+    - **Windows** — ``.lnk`` shortcut on the Desktop (created via PowerShell).
+    - **WSL**     — Linux ``.desktop`` file *and* an optional Windows
+                    ``.lnk`` shortcut accessible from the Windows Desktop.
+    """
+    platform_label = get_platform_label()
+    print(bold("Creating Agent Context Dashboard shortcut"))
+    print(f"  Platform: {platform_label}")
+    print()
+    if is_wsl():
+        _create_shortcut_wsl()
+    elif is_windows():
+        _create_shortcut_windows()
+    elif platform.system() == "Darwin":
+        _create_shortcut_macos()
+    else:
+        _create_shortcut_linux()
+
+
+def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
+    """Create an XDG .desktop launcher (Linux)."""
+    install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
+    extra_flag = _gpu_extra_flag().strip()
+
+    # Use the absolute uv path so graphical launchers that don't inherit $PATH
+    # can still find the binary.
+    uv_bin = shutil.which("uv") or "uv"
+    if is_installed_package() and shutil.which("agent-context-local-ui"):
+        exec_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
+    else:
+        extra_parts = f"{extra_flag} " if extra_flag else ""
+        exec_cmd = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
+
+    desktop_content = (
+        "[Desktop Entry]\n"
+        "Version=1.0\n"
+        "Type=Application\n"
+        "Name=Agent Context Dashboard\n"
+        "GenericName=Code Search Dashboard\n"
+        "Comment=Open the Agent Context local semantic code search dashboard\n"
+        f"Exec=bash -c '{exec_cmd}'\n"
+        "Icon=utilities-terminal\n"
+        "Terminal=false\n"
+        "Categories=Development;Utility;\n"
+        "Keywords=code;search;ai;agent;semantic;\n"
+        "StartupNotify=true\n"
+    )
+
+    # Install to the XDG applications directory so it appears in the app menu.
+    apps_dir = Path.home() / ".local" / "share" / "applications"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    app_file = apps_dir / "agent-context-dashboard.desktop"
+    app_file.write_text(desktop_content, encoding="utf-8")
+    app_file.chmod(0o755)
+    print(f"{green('✓')} Application launcher: {app_file}")
+
+    # Refresh the desktop database so the launcher appears without re-login.
+    if shutil.which("update-desktop-database"):
+        try:
+            subprocess.run(
+                ["update-desktop-database", str(apps_dir)],
+                check=True, capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            pass  # Non-fatal; entry appears after next session login.
+
+    # Also place a copy on ~/Desktop when that directory exists.
+    if also_desktop:
+        desktop_dir = Path.home() / "Desktop"
+        if desktop_dir.is_dir():
+            desktop_shortcut = desktop_dir / "agent-context-dashboard.desktop"
+            desktop_shortcut.write_text(desktop_content, encoding="utf-8")
+            desktop_shortcut.chmod(0o755)
+            print(f"{green('✓')} Desktop shortcut:      {desktop_shortcut}")
+        else:
+            print("  (~/Desktop not found — only the application launcher was created)")
+
+    print()
+    print("  'Agent Context Dashboard' now appears in your application menu.")
+    print(f"  Command line: {cyan(_build_launch_cmd_str())}")
+
+
+def _create_shortcut_macos() -> None:
+    """Create a minimal .app bundle in ~/Applications (macOS)."""
+    install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
+    extra_flag = _gpu_extra_flag().strip()
+
+    uv_bin = shutil.which("uv") or "uv"
+    if is_installed_package() and shutil.which("agent-context-local-ui"):
+        launch_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
+    else:
+        extra_parts = f"{extra_flag} " if extra_flag else ""
+        launch_cmd = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
+
+    app_dir = Path.home() / "Applications" / "Agent Context Dashboard.app"
+    macos_dir = app_dir / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+
+    # Minimal Info.plist so macOS recognises the bundle.
+    plist = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
+        ' "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict>\n'
+        "    <key>CFBundleExecutable</key><string>AppRun</string>\n"
+        "    <key>CFBundleIdentifier</key><string>local.agent-context.dashboard</string>\n"
+        "    <key>CFBundleName</key><string>Agent Context Dashboard</string>\n"
+        "    <key>CFBundleDisplayName</key><string>Agent Context Dashboard</string>\n"
+        "    <key>CFBundleVersion</key><string>1.0</string>\n"
+        "    <key>CFBundlePackageType</key><string>APPL</string>\n"
+        "    <key>LSUIElement</key><false/>\n"
+        "</dict></plist>\n"
+    )
+    (app_dir / "Contents" / "Info.plist").write_text(plist, encoding="utf-8")
+
+    # The executable shell script that launches the server.
+    app_run = macos_dir / "AppRun"
+    app_run.write_text(
+        "#!/usr/bin/env bash\n"
+        f"exec {launch_cmd}\n",
+        encoding="utf-8",
+    )
+    app_run.chmod(0o755)
+
+    print(f"{green('✓')} Application bundle created: {app_dir}")
+    print()
+    print("  Open Finder → ~/Applications to find 'Agent Context Dashboard'.")
+    print("  Drag it to the Dock for one-click access.")
+    print(f"  Command line: {cyan(launch_cmd)}")
+
+
+def _create_shortcut_windows() -> None:
+    """Create a .lnk shortcut on the Windows Desktop via PowerShell."""
+    install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
+    extra_flag = _gpu_extra_flag().strip()
+
+    uv_bin = shutil.which("uv") or "uv"
+    if is_installed_package() and shutil.which("agent-context-local-ui"):
+        target = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
+        arguments = ""
+    else:
+        extra_parts = f"{extra_flag} " if extra_flag else ""
+        target = "cmd.exe"
+        # /c start "" keeps cmd.exe hidden after launching the background process.
+        arguments = (
+            f'/c start "" "{uv_bin}" run {extra_parts}'
+            f'--directory "{install_dir}" python ui_server/server.py'
+        )
+
+    desktop = Path.home() / "Desktop"
+    shortcut_path = desktop / "Agent Context Dashboard.lnk"
+
+    def _ps_str(s: str) -> str:
+        # Escape single-quotes inside PowerShell string literals.
+        return s.replace("'", "''")
+
+    ps_script = (
+        "$WshShell = New-Object -ComObject WScript.Shell\n"
+        f"$Shortcut = $WshShell.CreateShortcut('{_ps_str(str(shortcut_path))}')\n"
+        f"$Shortcut.TargetPath = '{_ps_str(target)}'\n"
+        f"$Shortcut.Arguments = '{_ps_str(arguments)}'\n"
+        "$Shortcut.Description = 'Open Agent Context Local Web Dashboard'\n"
+        f"$Shortcut.WorkingDirectory = '{_ps_str(str(install_dir))}'\n"
+        "$Shortcut.Save()\n"
+    )
+
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            check=True, capture_output=True, text=True,
+        )
+        print(f"{green('✓')} Desktop shortcut created: {shortcut_path}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(red(f"✗ Could not create Windows shortcut: {exc}"))
+        print("  Create it manually: right-click Desktop → New → Shortcut")
+        return
+
+    print()
+    print("  Double-click 'Agent Context Dashboard' on your Desktop to open it.")
+    print(f"  Command line: {cyan(_build_launch_cmd_str())}")
+
+
+def _create_shortcut_wsl() -> None:
+    """Create a Linux .desktop file and optionally a Windows .lnk shortcut (WSL)."""
+    print("WSL detected — creating Linux application launcher…")
+    _create_shortcut_linux()
+
+    # Also try to place a shortcut on the Windows Desktop so it's reachable from Windows.
+    print()
+    print("Attempting to create Windows Desktop shortcut via PowerShell…")
+    windows_user_dirs = _wsl_windows_user_dirs()
+    if not windows_user_dirs:
+        print(yellow("  Could not locate Windows user directory — skipping Windows shortcut."))
+        return
+
+    install_dir = get_default_install_dir()
+    # _gpu_extra_flag() already returns "--extra <name> " (with the flag prefix).
+    # Strip trailing whitespace only; do NOT add another "--extra".
+    extra_flag = _gpu_extra_flag().strip()
+    uv_bin = shutil.which("uv") or "uv"
+    extra_parts = f"{extra_flag} " if extra_flag else ""
+
+    # The server runs inside WSL, so we target wsl.exe from the Windows side.
+    wsl_launch = f"{uv_bin} run {extra_parts}--directory {install_dir} python ui_server/server.py"
+
+    def _ps_str(s: str) -> str:
+        return s.replace("'", "''")
+
+    for win_user_dir in windows_user_dirs[:1]:  # Only use the first matched Windows user
+        win_desktop = win_user_dir / "Desktop"
+        if not win_desktop.is_dir():
+            continue
+
+        shortcut_path = win_desktop / "Agent Context Dashboard.lnk"
+        ps_script = (
+            "$WshShell = New-Object -ComObject WScript.Shell\n"
+            f"$Shortcut = $WshShell.CreateShortcut('{_ps_str(str(shortcut_path))}')\n"
+            "$Shortcut.TargetPath = 'wsl.exe'\n"
+            f"$Shortcut.Arguments = '-- {_ps_str(wsl_launch)}'\n"
+            "$Shortcut.Description = 'Open Agent Context Local Web Dashboard (WSL)'\n"
+            "$Shortcut.Save()\n"
+        )
+        try:
+            subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                check=True, capture_output=True, text=True,
+            )
+            print(f"{green('✓')} Windows Desktop shortcut: {shortcut_path}")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print(yellow("  Could not create Windows shortcut (PowerShell unavailable or permission denied)."))
+        break
+
+
 # ── Entry point ───────────────────────────────────────────────────────
 
 COMMANDS = {
@@ -1701,6 +2065,8 @@ COMMANDS = {
     "mcp-check": cmd_mcp_check,
     "models": cmd_models,
     "config": cmd_config,
+    "open-dashboard": cmd_open_dashboard,
+    "create-shortcut": cmd_create_shortcut,
 }
 
 
@@ -1733,6 +2099,17 @@ def _suggest_command(unknown: str) -> str:
         "gpusetup": "gpu-setup",
         "gpu_setup": "gpu-setup",
         "cuda": "gpu-setup",
+        "open": "open-dashboard",
+        "dashboard": "open-dashboard",
+        "ui": "open-dashboard",
+        "opendashboard": "open-dashboard",
+        "open_dashboard": "open-dashboard",
+        "shortcut": "create-shortcut",
+        "icon": "create-shortcut",
+        "desktop": "create-shortcut",
+        "launcher": "create-shortcut",
+        "createshortcut": "create-shortcut",
+        "create_shortcut": "create-shortcut",
     }
     return aliases.get(unknown.lower().replace("-", "").replace("_", ""), "")
 

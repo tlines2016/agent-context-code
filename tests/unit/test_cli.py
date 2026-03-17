@@ -17,10 +17,15 @@ from scripts.cli import (
     cmd_config_reranker_min_score,
     cmd_doctor,
     cmd_help,
+    cmd_open_dashboard,
+    cmd_create_shortcut,
     cmd_paths,
     cmd_setup_guide,
     cmd_status,
     cmd_version,
+    _is_dashboard_running,
+    _ui_port,
+    _ui_server_cmd_parts,
     get_claude_config_paths,
     get_default_install_dir,
     get_platform_label,
@@ -189,6 +194,18 @@ class TestCLIPlatformHelpers:
         required = {"help", "--help", "-h", "doctor", "version", "--version", "status", "paths", "setup-guide"}
         assert required.issubset(COMMANDS.keys())
 
+    def test_commands_dict_contains_dashboard_entries(self):
+        """New dashboard commands must be registered in COMMANDS."""
+        assert "open-dashboard" in COMMANDS
+        assert "create-shortcut" in COMMANDS
+
+    def test_help_lists_dashboard_commands(self, capsys):
+        """help output must mention both new dashboard commands."""
+        cmd_help()
+        out = capsys.readouterr().out
+        assert "open-dashboard" in out
+        assert "create-shortcut" in out
+
 
 class TestRerankerMinScoreConfig:
     def test_config_reranker_min_score_persists_value(self, monkeypatch):
@@ -239,3 +256,152 @@ class TestRerankerMinScoreConfig:
         monkeypatch.setattr("scripts.cli.cmd_config_reranker_min_score", _capture)
         cmd_config()
         assert captured["value"] == "0.2"
+
+
+class TestDashboardCommands:
+    """Tests for open-dashboard and create-shortcut commands."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    def test_ui_port_defaults_to_7432(self, monkeypatch):
+        monkeypatch.delenv("CODE_SEARCH_UI_PORT", raising=False)
+        assert _ui_port() == 7432
+
+    def test_ui_port_respects_env_var(self, monkeypatch):
+        monkeypatch.setenv("CODE_SEARCH_UI_PORT", "9000")
+        assert _ui_port() == 9000
+
+    def test_ui_server_cmd_parts_returns_list(self):
+        parts = _ui_server_cmd_parts()
+        assert isinstance(parts, list)
+        assert len(parts) > 0
+
+    def test_is_dashboard_running_returns_false_on_closed_port(self):
+        # Port 1 is effectively always closed (reserved / no process).
+        assert _is_dashboard_running(1) is False
+
+    # ── open-dashboard ────────────────────────────────────────────────
+
+    def test_open_dashboard_opens_browser_when_server_running(self, monkeypatch, capsys):
+        """When the server is already up the browser should open immediately."""
+        monkeypatch.setattr("scripts.cli._is_dashboard_running", lambda _port: True)
+        opened_urls: list[str] = []
+        monkeypatch.setattr("webbrowser.open", lambda url: opened_urls.append(url))
+        cmd_open_dashboard()
+        out = capsys.readouterr().out
+        assert "already running" in out
+        assert len(opened_urls) == 1
+        assert "127.0.0.1" in opened_urls[0]
+
+    def test_open_dashboard_reports_failure_if_server_never_starts(self, monkeypatch, capsys):
+        """When the server fails to start a clear error message must be printed."""
+        import subprocess as _sp
+
+        class _FakeProc:
+            pid = 9999
+
+        monkeypatch.setattr("scripts.cli._is_dashboard_running", lambda _port: False)
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _FakeProc())
+        # time.sleep is a no-op so the poll loop exits immediately.
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        cmd_open_dashboard()
+        out = capsys.readouterr().out
+        assert "did not start" in out
+
+    # ── create-shortcut ───────────────────────────────────────────────
+
+    def test_create_shortcut_linux_writes_desktop_file(self, monkeypatch, tmp_path, capsys):
+        """Linux shortcut creates a .desktop file under ~/.local/share/applications."""
+        import scripts.cli as cli_mod
+
+        # Redirect home so no real files are written.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        apps_dir = fake_home / ".local" / "share" / "applications"
+
+        monkeypatch.setattr(cli_mod.Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr("scripts.cli.is_wsl", lambda: False)
+        monkeypatch.setattr("scripts.cli.is_windows", lambda: False)
+        monkeypatch.setattr("scripts.cli.platform.system", lambda: "Linux")
+        # Suppress update-desktop-database
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        cli_mod._create_shortcut_linux(also_desktop=False)
+
+        desktop_file = apps_dir / "agent-context-dashboard.desktop"
+        assert desktop_file.exists(), "Expected .desktop file to be created"
+        content = desktop_file.read_text()
+        assert "[Desktop Entry]" in content
+        assert "Agent Context Dashboard" in content
+        assert "Type=Application" in content
+
+    def test_create_shortcut_macos_writes_app_bundle(self, monkeypatch, tmp_path, capsys):
+        """macOS shortcut creates a minimal .app bundle."""
+        import scripts.cli as cli_mod
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+
+        monkeypatch.setattr(cli_mod.Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        cli_mod._create_shortcut_macos()
+
+        app_bundle = fake_home / "Applications" / "Agent Context Dashboard.app"
+        assert app_bundle.is_dir(), "Expected .app bundle directory"
+        info_plist = app_bundle / "Contents" / "Info.plist"
+        assert info_plist.exists(), "Expected Info.plist inside .app bundle"
+        app_run = app_bundle / "Contents" / "MacOS" / "AppRun"
+        assert app_run.exists(), "Expected AppRun executable inside .app bundle"
+        # Verify it's executable
+        assert app_run.stat().st_mode & 0o111, "AppRun should be executable"
+
+    def test_ui_port_falls_back_to_default_on_bad_env_var(self, monkeypatch, capsys):
+        """_ui_port() must fall back to 7432 (not raise) when env var is not an integer."""
+        monkeypatch.setenv("CODE_SEARCH_UI_PORT", "not-a-number")
+        result = _ui_port()
+        assert result == 7432
+        out = capsys.readouterr().out
+        assert "Warning" in out or "not a valid integer" in out.lower() or "not-a-number" in out
+
+    def test_create_shortcut_linux_exec_cmd_no_double_extra_flag(self, monkeypatch, tmp_path):
+        """GPU extra flag must not be duplicated in the Linux .desktop Exec line."""
+        import scripts.cli as cli_mod
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        apps_dir = fake_home / ".local" / "share" / "applications"
+
+        monkeypatch.setattr(cli_mod.Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr("scripts.cli.is_wsl", lambda: False)
+        monkeypatch.setattr("scripts.cli.is_windows", lambda: False)
+        monkeypatch.setattr("scripts.cli.platform.system", lambda: "Linux")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        # Simulate a GPU extra being configured.
+        monkeypatch.setattr("scripts.cli._gpu_extra_flag", lambda: "--extra cu128 ")
+
+        cli_mod._create_shortcut_linux(also_desktop=False)
+
+        desktop_file = apps_dir / "agent-context-dashboard.desktop"
+        content = desktop_file.read_text()
+        # Should contain exactly one --extra flag, not "--extra --extra"
+        assert "--extra --extra" not in content
+        assert "--extra cu128" in content
+
+    def test_create_shortcut_macos_no_double_extra_flag(self, monkeypatch, tmp_path):
+        """GPU extra flag must not be duplicated in the macOS AppRun script."""
+        import scripts.cli as cli_mod
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+
+        monkeypatch.setattr(cli_mod.Path, "home", staticmethod(lambda: fake_home))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("scripts.cli._gpu_extra_flag", lambda: "--extra cu128 ")
+
+        cli_mod._create_shortcut_macos()
+
+        app_run = fake_home / "Applications" / "Agent Context Dashboard.app" / "Contents" / "MacOS" / "AppRun"
+        content = app_run.read_text()
+        assert "--extra --extra" not in content
+        assert "--extra cu128" in content

@@ -48,6 +48,10 @@ keywords = [
 ]
 dependencies = [
     "click>=8.2.1",
+    # FastAPI + uvicorn: REST API for the web dashboard (agent-context-local-ui).
+    # fastapi pulls in starlette and pydantic; uvicorn is the ASGI server.
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
     # LanceDB: Embedded, serverless vector database.  Works like SQLite —
     # just point it at a local directory, no server/user/password needed.
     # This replaces faiss-cpu for vector storage and similarity search.
@@ -139,15 +143,17 @@ Issues = "https://github.com/tlines2016/agent-context-code/issues"
 [project.scripts]
 agent-context-local = "scripts.cli:main"
 agent-context-local-mcp = "mcp_server.server:main"
+agent-context-local-ui = "ui_server.server:main"
 
 [tool.setuptools]
 py-modules = ["common_utils"]
 
 [tool.setuptools.packages.find]
-include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*", "graph*", "scripts*"]
+include = ["chunking*", "embeddings*", "search*", "mcp_server*", "merkle*", "reranking*", "graph*", "scripts*", "ui_server*"]
 
 [tool.setuptools.package-data]
 mcp_server = ["strings.yaml"]
+ui_server = ["static/*", "static/assets/*"]
 "*" = ["py.typed"]
 
 [tool.uv]
