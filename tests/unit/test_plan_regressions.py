@@ -485,6 +485,9 @@ class TestMissingSeedSemantics:
         mock_graph.get_connected_subgraph.return_value = {
             "symbols": [{"chunk_id": "valid_chunk"}],
             "edges": [{"source_chunk_id": "valid_chunk", "target_chunk_id": "bar", "edge_type": "contains"}],
+            "total_edges_found": 1,
+            "truncated": False,
+            "omitted_by_type": {},
         }
 
         with patch.object(server, "get_code_graph", return_value=mock_graph), \
@@ -508,6 +511,9 @@ class TestMissingSeedSemantics:
         mock_graph.get_connected_subgraph.return_value = {
             "symbols": [{"chunk_id": "lonely_chunk"}],
             "edges": [],
+            "total_edges_found": 0,
+            "truncated": False,
+            "omitted_by_type": {},
         }
 
         with patch.object(server, "get_code_graph", return_value=mock_graph), \

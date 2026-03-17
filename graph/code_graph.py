@@ -53,6 +53,23 @@ EDGE_CONTAINS = "contains"
 
 VALID_EDGE_TYPES = {EDGE_IMPORTS, EDGE_CALLS, EDGE_INHERITS, EDGE_CONTAINS}
 
+# Display / truncation priority for graph edges.
+# Lower number = kept first when max_edges is exceeded.
+# contains: class→method containment — highest structural signal
+# inherits: type hierarchy — useful for architecture mapping
+# calls:    call-graph edges — highest cardinality, most noise
+EDGE_PRIORITY: Dict[str, int] = {
+    EDGE_CONTAINS: 0,
+    EDGE_INHERITS: 1,
+    EDGE_IMPORTS:  1,
+    EDGE_CALLS:    2,
+}
+
+# If a called function name resolves to more than this many symbols, skip
+# creating call edges for it. Names matching many symbols are typically generic
+# utilities or versioned duplicates where the edge would be noise.
+MAX_CALLEE_AMBIGUITY: int = 8
+
 
 class CodeGraph:
     """SQLite-backed relational graph for code structure.
@@ -315,6 +332,8 @@ class CodeGraph:
         self,
         chunk_id: str,
         max_depth: int = 2,
+        max_edges: int = 50,
+        edge_type_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a small neighbourhood around *chunk_id*.
 
@@ -322,11 +341,24 @@ class CodeGraph:
         symbol, collecting all reachable symbols and their connecting edges.
         Useful for providing "context" around a search result.
 
+        Parameters
+        ----------
+        chunk_id : str
+            The seed symbol to traverse from.
+        max_depth : int
+            Maximum BFS hops from the seed (default 2).
+        max_edges : int
+            Hard cap on edges returned after priority sort (default 50,
+            range 1–200).  Edges are prioritized: contains > inherits >
+            calls.  When truncated, lower-priority edges are dropped first.
+        edge_type_filter : str, optional
+            Restrict traversal to one edge type (e.g. ``"contains"``).
+
         Returns
         -------
         dict
-            ``{"symbols": [...], "edges": [...]}`` where each symbol /
-            edge is a dict.
+            ``{"symbols": [...], "edges": [...], "total_edges_found": int,
+            "truncated": bool, "omitted_by_type": dict}``
         """
         # Keep traversal resilient for direct callers that pass invalid depth.
         # Server-layer validation enforces non-negative ints for MCP requests.
@@ -339,10 +371,9 @@ class CodeGraph:
 
         visited_ids: set = set()
         frontier = {chunk_id}
-        all_edges: List[Dict[str, Any]] = []
+        all_edges: List[tuple] = []  # (edge_dict, hop_depth)
 
-        # depth 0 = seed only; depth 1 = seed + direct neighbours; etc.
-        for _ in range(traversal_depth + 1):
+        for current_hop in range(traversal_depth + 1):
             if not frontier:
                 break
             next_frontier: set = set()
@@ -350,9 +381,11 @@ class CodeGraph:
                 if cid in visited_ids:
                     continue
                 visited_ids.add(cid)
-                rels = self.get_relationships(cid, direction="both")
+                rels = self.get_relationships(
+                    cid, direction="both", edge_type=edge_type_filter
+                )
                 for edge in rels:
-                    all_edges.append(edge)
+                    all_edges.append((edge, current_hop))
                     neighbour = (
                         edge["target_chunk_id"]
                         if edge["source_chunk_id"] == cid
@@ -362,26 +395,53 @@ class CodeGraph:
                         next_frontier.add(neighbour)
             frontier = next_frontier
 
-        # Resolve all visited symbols in one pass.
-        symbols = self._resolve_symbols(list(visited_ids))
-
-        # Deduplicate edges (same triple may appear from both ends).
-        seen_edges: set = set()
-        unique_edges: List[Dict[str, Any]] = []
-        for e in all_edges:
-            # Enforce depth-boundary consistency: only include edges fully
-            # contained in the returned symbol set.
+        # Deduplicate edges, enforcing boundary consistency.
+        seen_keys: set = set()
+        unique_edges_with_depth: List[tuple] = []
+        for e, depth in all_edges:
             if (
                 e["source_chunk_id"] not in visited_ids
                 or e["target_chunk_id"] not in visited_ids
             ):
                 continue
             key = (e["source_chunk_id"], e["target_chunk_id"], e["edge_type"])
-            if key not in seen_edges:
-                seen_edges.add(key)
-                unique_edges.append(e)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_edges_with_depth.append((e, depth))
 
-        return {"symbols": symbols, "edges": unique_edges}
+        # Sort by (structural priority, hop depth) — most useful edges first.
+        unique_edges_with_depth.sort(
+            key=lambda ed: (EDGE_PRIORITY.get(ed[0]["edge_type"], 99), ed[1])
+        )
+
+        total_edges_found = len(unique_edges_with_depth)
+        truncated = total_edges_found > max_edges
+
+        kept_with_depth = unique_edges_with_depth[:max_edges]
+        omitted_with_depth = unique_edges_with_depth[max_edges:]
+
+        kept_edges = [e for e, _ in kept_with_depth]
+
+        # Count omitted edges by type for transparency metadata.
+        omitted_by_type: Dict[str, int] = {}
+        for e, _ in omitted_with_depth:
+            t = e["edge_type"]
+            omitted_by_type[t] = omitted_by_type.get(t, 0) + 1
+
+        # Resolve only symbols that appear in the kept edge set + seed node.
+        referenced_ids: set = {chunk_id}
+        for edge in kept_edges:
+            referenced_ids.add(edge["source_chunk_id"])
+            referenced_ids.add(edge["target_chunk_id"])
+        symbols = self._resolve_symbols(list(referenced_ids))
+
+        return {
+            "symbols": symbols,
+            "edges": kept_edges,
+            "total_edges_found": total_edges_found,
+            "truncated": truncated,
+            "omitted_by_type": omitted_by_type,
+        }
 
     # ── Index helper ────────────────────────────────────────────────────
 
@@ -535,6 +595,10 @@ class CodeGraph:
 
             for called_name in called_names:
                 callee_ids = name_to_ids.get(called_name, [])
+                # Skip if name maps to too many symbols — likely a generic
+                # utility or a versioned-codebase duplicate.
+                if len(callee_ids) > MAX_CALLEE_AMBIGUITY:
+                    continue
                 for callee_id in callee_ids:
                     if callee_id == caller_id:
                         continue  # skip self-calls
@@ -547,7 +611,11 @@ class CodeGraph:
         self.commit()
         after_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
         new_edges = after_count - before_count
-        logger.info("resolve_call_edges: inserted %d CALLS edges", new_edges)
+        logger.info(
+            "resolve_call_edges: inserted %d CALLS edges (MAX_CALLEE_AMBIGUITY=%d)",
+            new_edges,
+            MAX_CALLEE_AMBIGUITY,
+        )
         return new_edges
 
     # ── Statistics ───────────────────────────────────────────────────────

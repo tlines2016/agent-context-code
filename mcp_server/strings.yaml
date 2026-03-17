@@ -25,15 +25,17 @@ tools:
     Also useful as fallback when search_code returns low scores — find any loosely-related chunk, then pivot via similarity. Scores ≥ 0.80 = same pattern/interface; 0.65–0.79 = related domain.
 
   get_graph_context: |
-    Deep structural traversal around a code chunk. Returns containment (class→method), inheritance (child→parent), and call (caller→callee) relationships within max_depth hops.
-    USE WHEN: You have a chunk_id from search_code and need the structural neighborhood (parent class, sibling methods, inheritance chain, callers/callees).
-    DO NOT USE WHEN: You want to find code by meaning — use search_code (which already includes lightweight graph hints).
+    Structural traversal around a chunk: containment, inheritance, and call edges within max_depth hops.
+    USE WHEN: You have a chunk_id and need parent class, siblings, hierarchy, or callers/callees. Use after search_code.
+    DO NOT USE WHEN: Finding code by meaning — search_code already includes lightweight graph hints.
     Key args:
-      chunk_id (required): identifier from a search_code result.
-      max_depth: traversal depth (default 2, keep small — 1–3 recommended).
-      project_path: query a different project's graph without switching context.
-    Returns found=true with symbols/edges, or found=false with miss_reason when chunk is absent from the graph.
-    Example: get_graph_context(chunk_id="src/auth.py::AuthService::0", max_depth=2)
+      chunk_id (required): from a search_code result.
+      max_depth: hops (default 2). Prefer 1 on large codebases.
+      max_edges: edge cap (default 50, max 200). Priority: contains > inherits > calls.
+      edge_type: filter to "contains", "inherits", or "calls". Omit for all.
+      project_path: cross-project query without switching.
+    If truncated=true, read truncation_note for what was omitted and how to narrow.
+    Example: get_graph_context(chunk_id="src/auth.py::AuthService::0", max_depth=1, edge_type="contains")
   
   index_directory: |
     Index a codebase for semantic search. Creates isolated per-project storage. Run before searching a new project.

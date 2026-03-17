@@ -29,7 +29,7 @@ from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager
 from search.searcher import IntelligentSearcher
-from graph.code_graph import CodeGraph
+from graph.code_graph import CodeGraph, VALID_EDGE_TYPES
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -756,19 +756,22 @@ class CodeSearchServer:
         Only top-N candidates (all of them, bounded by the search k) are
         enriched.  Returns True if at least one result was enriched.
         """
+        # Sort by structural signal: contains > inherits/imports > calls
+        _HINT_PRIORITY = {"contains": 0, "inherits": 1, "imports": 1, "calls": 2}
         enriched_any = False
         for item, result in zip(formatted_results, raw_results):
             try:
                 chunk_id = result.chunk_id if hasattr(result, "chunk_id") else item.get("chunk_id", "")
                 rels = graph.get_relationships(chunk_id)
                 if rels:
+                    sorted_rels = sorted(rels, key=lambda r: _HINT_PRIORITY.get(r["edge_type"], 99))
                     item['relationships'] = [
                         {
                             'type': r['edge_type'],
                             'target': r['target_chunk_id'] if r['source_chunk_id'] == chunk_id else r['source_chunk_id'],
                             'direction': 'outgoing' if r['source_chunk_id'] == chunk_id else 'incoming',
                         }
-                        for r in rels[:max_relationships]
+                        for r in sorted_rels[:max_relationships]
                     ]
                     enriched_any = True
             except Exception as exc:
@@ -1409,15 +1412,15 @@ class CodeSearchServer:
         self,
         chunk_id: str,
         max_depth: int = 2,
+        max_edges: int = 50,
+        edge_type: Optional[str] = None,
         project_path: str = None,
     ) -> str:
         """Retrieve structural relationships around a code chunk.
 
         Returns the connected sub-graph (symbols and edges) within
-        *max_depth* hops of the given *chunk_id*.  Useful for
-        understanding how a search result connects to the rest of the
-        codebase (containment and inheritance relationships, plus other
-        edge types when available).
+        *max_depth* hops of the given *chunk_id*, capped at *max_edges*
+        edges (prioritized: contains > inherits > calls).
 
         Parameters
         ----------
@@ -1425,6 +1428,11 @@ class CodeSearchServer:
             The chunk identifier (from a search result).
         max_depth : int
             Maximum traversal depth (default 2).
+        max_edges : int
+            Hard cap on returned edges (default 50, range 1–200).
+        edge_type : str, optional
+            Restrict to one edge type: ``"contains"``, ``"inherits"``,
+            ``"calls"``, or ``"imports"``.
         project_path : str, optional
             Target project path.  Uses the active project when omitted.
         """
@@ -1445,6 +1453,20 @@ class CodeSearchServer:
                 return json.dumps({
                     "error": f"max_depth must be >= 0 (got {max_depth}).",
                     "suggestion": "Pass a small non-negative integer, e.g. max_depth=2. Recommended range: 0–3."
+                })
+
+            # Validate and clamp max_edges.
+            try:
+                max_edges = max(1, min(200, int(max_edges)))
+            except (TypeError, ValueError):
+                max_edges = 50
+
+            # Validate edge_type filter.
+            if edge_type is not None and edge_type not in VALID_EDGE_TYPES:
+                return json.dumps({
+                    "error": f"Invalid edge_type '{edge_type}'.",
+                    "valid_values": sorted(VALID_EDGE_TYPES),
+                    "suggestion": "Use one of the listed valid values, or omit edge_type to return all types."
                 })
 
             target_path = str(Path(target_path).resolve())
@@ -1491,20 +1513,44 @@ class CodeSearchServer:
                         "edge_count": 0,
                     }, indent=2)
 
-                subgraph = graph.get_connected_subgraph(chunk_id, max_depth=max_depth)
+                subgraph = graph.get_connected_subgraph(
+                    chunk_id,
+                    max_depth=max_depth,
+                    max_edges=max_edges,
+                    edge_type_filter=edge_type,
+                )
             finally:
                 if use_transient_graph:
                     graph.close()
 
-            return json.dumps({
+            response: Dict[str, Any] = {
                 "chunk_id": chunk_id,
                 "found": True,
                 "max_depth": max_depth,
+                "max_edges": max_edges,
                 "symbols": subgraph["symbols"],
                 "edges": subgraph["edges"],
                 "symbol_count": len(subgraph["symbols"]),
                 "edge_count": len(subgraph["edges"]),
-            }, indent=2)
+                "total_edges_found": subgraph["total_edges_found"],
+                "truncated": subgraph["truncated"],
+            }
+
+            if subgraph["truncated"]:
+                omitted = subgraph["omitted_by_type"]
+                omitted_parts = ", ".join(
+                    f"{t}: {n}"
+                    for t, n in sorted(omitted.items(), key=lambda kv: -kv[1])
+                )
+                response["truncation_note"] = (
+                    f"Response capped at {max_edges} of {subgraph['total_edges_found']} edges "
+                    f"(priority order: contains > inherits > calls). "
+                    f"Omitted — {omitted_parts}. "
+                    f"To narrow: set edge_type='contains' for structure, "
+                    f"or reduce max_depth to 1."
+                )
+
+            return json.dumps(response, indent=2)
 
         except Exception as e:
             error_msg = f"Graph context lookup failed: {str(e)}"

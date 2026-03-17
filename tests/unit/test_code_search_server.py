@@ -467,6 +467,9 @@ class TestGetGraphContext:
         mock_graph.get_connected_subgraph.return_value = {
             "symbols": [{"chunk_id": "a"}, {"chunk_id": "b"}],
             "edges": [{"source_chunk_id": "a", "target_chunk_id": "b", "edge_type": "contains"}],
+            "total_edges_found": 1,
+            "truncated": False,
+            "omitted_by_type": {},
         }
         with patch.object(server, "get_code_graph", return_value=mock_graph), \
              patch.object(server, "_graph_db_path") as mock_gpath:
@@ -487,7 +490,10 @@ class TestGetGraphContext:
         target_project = str(tmp_path / "other_project")
         mock_graph = MagicMock()
         mock_graph.get_symbol.return_value = {"chunk_id": "chunk_1", "name": "Foo"}
-        mock_graph.get_connected_subgraph.return_value = {"symbols": [], "edges": []}
+        mock_graph.get_connected_subgraph.return_value = {
+            "symbols": [], "edges": [],
+            "total_edges_found": 0, "truncated": False, "omitted_by_type": {},
+        }
 
         with patch.object(server, "_open_transient_graph", return_value=mock_graph) as open_graph:
             result = json.loads(server.get_graph_context("chunk_1", project_path=target_project))
