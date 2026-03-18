@@ -8,7 +8,7 @@
  */
 import { useState, useEffect, useId, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Settings, Save, Loader2, CheckCircle, XCircle } from 'lucide-react'
+import { Settings, Save, Loader2, CheckCircle, XCircle, AlertTriangle, RotateCw } from 'lucide-react'
 import { api, type SettingsUpdate } from '@/api/client'
 
 export default function SettingsForm() {
@@ -31,6 +31,11 @@ export default function SettingsForm() {
     queryFn: api.listModels,
   })
 
+  const { data: rerankersData, isLoading: rerankersLoading } = useQuery({
+    queryKey: ['rerankers'],
+    queryFn: api.listRerankers,
+  })
+
   // Local form state — initialised from loaded settings
   const [modelName, setModelName] = useState('')
   const [rerankerEnabled, setRerankerEnabled] = useState(false)
@@ -40,6 +45,12 @@ export default function SettingsForm() {
   const [offloadMin, setOffloadMin] = useState(15)
   const [unloadMin, setUnloadMin] = useState(30)
   const [initialised, setInitialised] = useState(false)
+  const [restartRequired, setRestartRequired] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+  const [restartFailed, setRestartFailed] = useState(false)
+  // Track initial model/reranker values to detect changes that require restart.
+  const [savedModelName, setSavedModelName] = useState('')
+  const [savedRerankerModel, setSavedRerankerModel] = useState('')
 
   // Hydrate form once settings load (only once to avoid overriding edits)
   useEffect(() => {
@@ -55,6 +66,9 @@ export default function SettingsForm() {
       }
       setOffloadMin(settings.idle_offload_minutes ?? 15)
       setUnloadMin(settings.idle_unload_minutes ?? 30)
+      const emName = typeof em === 'object' ? em?.model_name ?? '' : em ?? ''
+      setSavedModelName(emName)
+      setSavedRerankerModel(rr?.model_name ?? '')
       setInitialised(true)
     }
   }, [settings, initialised])
@@ -63,6 +77,12 @@ export default function SettingsForm() {
     mutationFn: (update: SettingsUpdate) => api.updateSettings(update),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['settings'] })
+      // Only show restart notice when embedding model or reranker model changed.
+      if (modelName !== savedModelName || rerankerModel !== savedRerankerModel) {
+        setRestartRequired(true)
+        setSavedModelName(modelName)
+        setSavedRerankerModel(rerankerModel)
+      }
     },
   })
 
@@ -83,7 +103,36 @@ export default function SettingsForm() {
     updateMutation.mutate(update)
   }
 
-  const isLoading = settingsLoading || modelsLoading
+  async function handleRestart() {
+    setRestarting(true)
+    setRestartFailed(false)
+    try {
+      await api.restartServer()
+    } catch {
+      // Server may drop the connection as it shuts down — that's expected.
+    }
+    // Poll /health until the new server instance is ready.
+    const maxAttempts = 30
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      try {
+        await api.health()
+        // Server is back — refresh all data.
+        qc.invalidateQueries()
+        setRestarting(false)
+        setRestartRequired(false)
+        setInitialised(false)
+        return
+      } catch {
+        // Server not ready yet — keep polling.
+      }
+    }
+    // Restart timed out — show error feedback.
+    setRestarting(false)
+    setRestartFailed(true)
+  }
+
+  const isLoading = settingsLoading || modelsLoading || rerankersLoading
 
   return (
     <div className="p-6 space-y-6 max-w-2xl">
@@ -100,6 +149,37 @@ export default function SettingsForm() {
         </div>
       ) : (
         <div className="space-y-6">
+          {/* Restart notice */}
+          {restartFailed && (
+            <div role="alert" className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+              <XCircle size={16} className="shrink-0" />
+              <span>Server did not come back within 60 seconds. Try restarting manually via the CLI.</span>
+            </div>
+          )}
+          {restarting && (
+            <div role="alert" className="flex items-center gap-2 rounded-md border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-300">
+              <Loader2 size={16} className="animate-spin shrink-0" />
+              <span>Server is restarting — this may take up to 60 seconds while models reload…</span>
+            </div>
+          )}
+          {restartRequired && !restarting && (
+            <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <div className="flex flex-1 items-center justify-between gap-3">
+                <span>
+                  Embedding model or reranker changes take effect after restarting the server.
+                </span>
+                <button
+                  onClick={handleRestart}
+                  className="shrink-0 flex items-center gap-1.5 rounded-md bg-amber-500/20 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-500/30 transition-colors"
+                >
+                  <RotateCw size={12} />
+                  Restart Server
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Embedding model */}
           <Section title="Embedding Model" description="The model used to generate code embeddings. Changing this requires re-indexing all projects.">
             <div>
@@ -114,16 +194,15 @@ export default function SettingsForm() {
                 {modelsData?.models.map((m) => (
                   <option key={m.model_name} value={m.model_name}>
                     {m.short_name || m.model_name}
-                    {m.gpu_default ? ' (GPU)' : ' (CPU)'}
+                    {m.gpu_default ? ' · GPU recommended' : ' · CPU friendly'}
                     {m.embedding_dimension ? ` · ${m.embedding_dimension}d` : ''}
                   </option>
                 ))}
               </select>
-              {modelsData?.models.find((m) => m.model_name === modelName)?.description && (
-                <p className="mt-1.5 text-xs text-slate-500">
-                  {modelsData.models.find((m) => m.model_name === modelName)!.description}
-                </p>
-              )}
+              {(() => {
+                const desc = modelsData?.models.find((m) => m.model_name === modelName)?.description
+                return desc ? <p className="mt-1.5 text-xs text-slate-500">{desc}</p> : null
+              })()}
             </div>
           </Section>
 
@@ -145,14 +224,24 @@ export default function SettingsForm() {
               <div className="space-y-3">
                 <div>
                   <label className="label" htmlFor={rerankerModelId}>Reranker model</label>
-                  <input
+                  <select
                     id={rerankerModelId}
-                    type="text"
                     value={rerankerModel}
                     onChange={(e) => setRerankerModel(e.target.value)}
-                    placeholder="cross-encoder/ms-marco-MiniLM-L-6-v2"
                     className="input"
-                  />
+                  >
+                    <option value="">— select —</option>
+                    {rerankersData?.rerankers.map((r) => (
+                      <option key={r.model_name} value={r.model_name}>
+                        {r.short_name || r.model_name}
+                        {r.gpu_default ? ' · GPU recommended' : ' · CPU friendly'}
+                      </option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const desc = rerankersData?.rerankers.find((r) => r.model_name === rerankerModel)?.description
+                    return desc ? <p className="mt-1.5 text-xs text-slate-500">{desc}</p> : null
+                  })()}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>

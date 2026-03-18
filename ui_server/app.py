@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ui_server import dependencies
-from ui_server.routes import health, index, models, projects, search, settings
+from ui_server.routes import health, index, models, projects, search, server_control, settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,7 @@ def create_app(server_instance) -> FastAPI:
     app.include_router(index.router, prefix=api_prefix, tags=["index"])
     app.include_router(settings.router, prefix=api_prefix, tags=["settings"])
     app.include_router(models.router, prefix=api_prefix, tags=["models"])
+    app.include_router(server_control.router, prefix=api_prefix, tags=["server"])
 
     # ── Static files (compiled React bundle) ─────────────────────────────
     # Only mount static files when the build output directory exists.

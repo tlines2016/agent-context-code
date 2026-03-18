@@ -25,6 +25,8 @@ from scripts.cli import (
     cmd_status,
     cmd_version,
     _is_dashboard_running,
+    _is_port_in_use,
+    _is_ui_entry_point_installed,
     _ui_port,
     _ui_server_cmd_parts,
     get_claude_config_paths,
@@ -296,13 +298,16 @@ class TestDashboardCommands:
 
     def test_open_dashboard_reports_failure_if_server_never_starts(self, monkeypatch, capsys):
         """When the server fails to start a clear error message must be printed."""
-        import subprocess as _sp
 
         class _FakeProc:
             pid = 9999
+            def poll(self):
+                return None  # simulate still-running process
 
         monkeypatch.setattr("scripts.cli._is_dashboard_running", lambda _port: False)
+        monkeypatch.setattr("scripts.cli._is_port_in_use", lambda _port: False)
         monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _FakeProc())
+        monkeypatch.setattr("scripts.cli._DASHBOARD_START_TIMEOUT_S", 0.0)
         # time.sleep is a no-op so the poll loop exits immediately.
         monkeypatch.setattr("time.sleep", lambda _s: None)
         cmd_open_dashboard()
@@ -407,3 +412,78 @@ class TestDashboardCommands:
         content = app_run.read_text()
         assert "--extra --extra" not in content
         assert "--extra cu128" in content
+
+    # ── _is_port_in_use tests ─────────────────────────────────────────────
+
+    def test_is_port_in_use_free_port(self):
+        """A released port should be reported as free."""
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        assert _is_port_in_use(port) is False
+
+    def test_is_port_in_use_occupied_port(self):
+        """A port held open by a listening socket should be reported as in use."""
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+        try:
+            assert _is_port_in_use(port) is True
+        finally:
+            s.close()
+
+    # ── open-dashboard port-in-use / crashed-process tests ────────────────
+
+    def test_open_dashboard_aborts_when_port_in_use_but_not_dashboard(self, monkeypatch, capsys):
+        """When port is occupied by a non-dashboard process, abort without spawning."""
+        monkeypatch.setattr("scripts.cli._is_dashboard_running", lambda _port: False)
+        monkeypatch.setattr("scripts.cli._is_port_in_use", lambda _port: True)
+        popen_called = []
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: popen_called.append(1))
+        cmd_open_dashboard()
+        out = capsys.readouterr().out
+        assert "already in use" in out or "occupied" in out or "in use" in out
+        assert len(popen_called) == 0
+
+    def test_open_dashboard_reports_crashed_process(self, monkeypatch, capsys):
+        """When the spawned process exits immediately, report the crash."""
+
+        class _CrashedProc:
+            pid = 8888
+            def poll(self):
+                return 1  # process exited with error
+
+        monkeypatch.setattr("scripts.cli._is_dashboard_running", lambda _port: False)
+        monkeypatch.setattr("scripts.cli._is_port_in_use", lambda _port: False)
+        monkeypatch.setattr("scripts.cli._DASHBOARD_START_TIMEOUT_S", 5.0)
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: _CrashedProc())
+        # time.sleep no-op so poll loop runs instantly.
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        cmd_open_dashboard()
+        out = capsys.readouterr().out
+        assert "exited unexpectedly" in out
+        assert "exit code 1" in out
+
+    # ── _is_ui_entry_point_installed tests ────────────────────────────────
+
+    def test_is_ui_entry_point_installed_dev_venv(self, monkeypatch):
+        """Binary inside the source checkout venv should return False."""
+        import scripts.cli as cli_mod
+        repo_root = Path(cli_mod.__file__).resolve().parent.parent
+        fake_bin = str(repo_root / ".venv" / "Scripts" / "agent-context-local-ui.exe")
+        monkeypatch.setattr("shutil.which", lambda name: fake_bin)
+        assert _is_ui_entry_point_installed() is False
+
+    def test_is_ui_entry_point_installed_proper_install(self, monkeypatch):
+        """Binary outside the repo root should return True."""
+        monkeypatch.setattr("shutil.which", lambda name: "/home/user/.local/bin/agent-context-local-ui")
+        assert _is_ui_entry_point_installed() is True
+
+    def test_is_ui_entry_point_installed_not_found(self, monkeypatch):
+        """No binary on PATH should return False."""
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        assert _is_ui_entry_point_installed() is False
