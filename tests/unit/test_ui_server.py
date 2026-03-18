@@ -393,6 +393,68 @@ class TestModels:
         assert "model_name" in model
         assert "description" in model
 
+    def test_list_models_includes_gpu_available(self, client: TestClient):
+        """Response must include a boolean gpu_available field."""
+        resp = client.get("/api/v1/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "gpu_available" in body
+        assert isinstance(body["gpu_available"], bool)
+
+
+# ---------------------------------------------------------------------------
+# Rerankers
+# ---------------------------------------------------------------------------
+
+class TestRerankers:
+    def test_list_rerankers_returns_catalog(self, client: TestClient):
+        """GET /api/v1/rerankers should return the reranker catalog."""
+        resp = client.get("/api/v1/rerankers")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "rerankers" in body
+        assert "count" in body
+        assert body["count"] >= 1
+        assert isinstance(body["rerankers"], list)
+        # Each item should have the expected fields
+        for item in body["rerankers"]:
+            assert "model_name" in item
+            assert "short_name" in item
+            assert "gpu_default" in item
+        # Verify well-known models are present
+        model_names = [r["model_name"] for r in body["rerankers"]]
+        assert "cross-encoder/ms-marco-MiniLM-L-6-v2" in model_names
+        assert "Qwen/Qwen3-Reranker-0.6B" in model_names
+
+
+# ---------------------------------------------------------------------------
+# SPA fallback
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Server Control
+# ---------------------------------------------------------------------------
+
+class TestServerControl:
+    def test_restart_returns_message(self, client: TestClient):
+        """POST /api/v1/server/restart should return a restart message."""
+        # We need to mock the signal to prevent the test process from actually shutting down.
+        with patch("ui_server.routes.server_control._signal_shutdown"):
+            resp = client.post("/api/v1/server/restart")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "message" in body
+        assert "restart" in body["message"].lower() or "restarting" in body["message"].lower()
+
+    def test_restart_sets_flag(self, client: TestClient):
+        """Restart endpoint should set the restart-requested flag."""
+        from ui_server.routes.server_control import is_restart_requested, clear_restart_flag
+        clear_restart_flag()
+        with patch("ui_server.routes.server_control._signal_shutdown"):
+            client.post("/api/v1/server/restart")
+        assert is_restart_requested() is True
+        clear_restart_flag()
+
 
 # ---------------------------------------------------------------------------
 # SPA fallback

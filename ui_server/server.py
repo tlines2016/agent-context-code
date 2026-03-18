@@ -143,31 +143,42 @@ def main() -> None:
     from mcp_server.code_search_server import CodeSearchServer
     from ui_server.app import create_app
 
-    logger.info("Initialising CodeSearchServer…")
-    server = CodeSearchServer()
+    from ui_server.routes.server_control import is_restart_requested, clear_restart_flag
 
-    logger.info("Building FastAPI application…")
-    app = create_app(server)
+    first_run = True
+    while True:
+        clear_restart_flag()
 
-    url = f"http://{args.host}:{args.port}"
-    logger.info("Starting UI server at %s", url)
-    print(f"\n  Agent Context Local — Web Dashboard\n  {url}\n")
+        logger.info("Initialising CodeSearchServer…")
+        server = CodeSearchServer()
 
-    # Open the browser after a short delay so uvicorn has time to bind.
-    if not args.no_browser:
-        import threading
-        def _open_browser() -> None:
-            import time
-            time.sleep(_BROWSER_OPEN_DELAY_S)
-            webbrowser.open(url)
-        threading.Thread(target=_open_browser, daemon=True).start()
+        logger.info("Building FastAPI application…")
+        app = create_app(server)
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="debug" if args.verbose else "warning",
-    )
+        url = f"http://{args.host}:{args.port}"
+        logger.info("Starting UI server at %s", url)
+        print(f"\n  Agent Context Local — Web Dashboard\n  {url}\n")
+
+        # Open the browser after a short delay so uvicorn has time to bind.
+        if first_run and not args.no_browser:
+            import threading
+            def _open_browser() -> None:
+                import time
+                time.sleep(_BROWSER_OPEN_DELAY_S)
+                webbrowser.open(url)
+            threading.Thread(target=_open_browser, daemon=True).start()
+        first_run = False
+
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="debug" if args.verbose else "warning",
+        )
+
+        if not is_restart_requested():
+            break
+        logger.info("Restart requested — reinitialising server…")
 
 
 if __name__ == "__main__":

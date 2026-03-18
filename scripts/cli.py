@@ -171,6 +171,24 @@ def _gpu_extra_flag() -> str:
     return ""
 
 
+def _is_ui_entry_point_installed() -> bool:
+    """True when ``agent-context-local-ui`` resolves to a binary *outside* this source checkout.
+
+    Uses path-based detection rather than package metadata because
+    ``is_installed_package()`` returns True even for an editable/source-checkout
+    install where the version is set in ``pyproject.toml``.
+    """
+    bin_path = shutil.which("agent-context-local-ui")
+    if not bin_path:
+        return False
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        Path(bin_path).resolve().relative_to(repo_root)
+        return False  # binary is inside the source-checkout venv
+    except ValueError:
+        return True   # binary lives outside → proper uv-tool / pip install
+
+
 def _cmd_prefix() -> str:
     """CLI command prefix appropriate for install mode."""
     if is_installed_package() and shutil.which("agent-context-local"):
@@ -1690,6 +1708,7 @@ def cmd_config_idle(kind: str, raw_minutes: str) -> None:
 
 # Default port matches ui_server/server.py and CODE_SEARCH_UI_PORT.
 _DEFAULT_UI_PORT = 7432
+_DASHBOARD_START_TIMEOUT_S = 60.0
 
 
 def _ui_server_cmd_parts() -> list[str]:
@@ -1698,7 +1717,7 @@ def _ui_server_cmd_parts() -> list[str]:
     Uses the installed ``agent-context-local-ui`` entry-point when available;
     falls back to ``uv run ... python ui_server/server.py`` for source checkouts.
     """
-    if is_installed_package() and shutil.which("agent-context-local-ui"):
+    if _is_ui_entry_point_installed():
         return ["agent-context-local-ui"]
     install_dir = get_default_install_dir()
     extra_flag = _gpu_extra_flag().strip()
@@ -1737,6 +1756,17 @@ def _is_dashboard_running(port: int) -> bool:
         return False
 
 
+def _is_port_in_use(port: int) -> bool:
+    """True if *port* is already bound by any process (even one not yet accepting connections)."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+            return False  # bind succeeded → port is free
+        except OSError:
+            return True   # bind failed → port is occupied
+
+
 def _build_launch_cmd_str() -> str:
     """Return the launch command as a single printable string."""
     return " ".join(_ui_server_cmd_parts())
@@ -1754,47 +1784,62 @@ def cmd_open_dashboard() -> None:
     if _is_dashboard_running(port):
         print(f"{green('✓')} Dashboard already running at {cyan(url)}")
         print("  Opening browser…")
+        import webbrowser
+        webbrowser.open(url)
+        print(f"  If the browser does not open, navigate to: {cyan(url)}")
+        return
+
+    # Port is not accepting connections — check if it's bound by a starting/alien process.
+    if _is_port_in_use(port):
+        print(red(f"✗ Port {port} is already in use by another process (not the dashboard)."))
+        print(f"  Kill the process holding port {port} or set {cyan('CODE_SEARCH_UI_PORT')} to a free port.")
+        return
+
+    # Start the server as an independent background process so the CLI
+    # returns immediately without blocking the terminal.
+    cmd = _ui_server_cmd_parts() + ["--no-browser"]
+    print("  Starting dashboard server…")
+    if is_windows():
+        proc = subprocess.Popen(
+            cmd,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW — avoids console popup
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     else:
-        # Start the server as an independent background process so the CLI
-        # returns immediately without blocking the terminal.
-        cmd = _ui_server_cmd_parts() + ["--no-browser"]
-        print("  Starting dashboard server…")
-        if is_windows():
-            proc = subprocess.Popen(
-                cmd,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW — avoids console popup
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,  # detach from terminal so it keeps running
-            )
-        print(f"  Server PID {proc.pid} — waiting for it to become ready…")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # detach from terminal so it keeps running
+        )
+    print(f"  Server PID {proc.pid} — waiting for it to become ready…")
+    print("  (first run may take up to 60 s while the embedding model loads)", flush=True)
 
-        # Poll until the server accepts connections (up to 10 s).
-        import time
-        deadline = time.monotonic() + 10.0
-        started = False
-        while time.monotonic() < deadline:
-            time.sleep(0.4)
-            if _is_dashboard_running(port):
-                started = True
-                break
-
-        if not started:
-            install_dir = get_default_install_dir()
-            extra = _gpu_extra_flag()
-            print(red("✗ Dashboard did not start within 10 seconds."))
-            print(f"  Start it manually: {cyan(f'uv run {extra}--directory {install_dir} python ui_server/server.py')}")
+    import time
+    deadline = time.monotonic() + _DASHBOARD_START_TIMEOUT_S
+    started = False
+    while time.monotonic() < deadline:
+        time.sleep(0.4)
+        rc = proc.poll()
+        if rc is not None:
+            # Process exited before becoming ready
+            print(red(f"✗ Server process exited unexpectedly (exit code {rc})."))
+            print("  Check for port conflicts or a missing dependency.")
             return
+        if _is_dashboard_running(port):
+            started = True
+            break
 
-        print(f"{green('✓')} Dashboard running at {cyan(url)}")
-        print("  Opening browser…")
+    if not started:
+        install_dir = get_default_install_dir()
+        extra = _gpu_extra_flag()
+        print(red(f"✗ Dashboard did not start within {int(_DASHBOARD_START_TIMEOUT_S)} seconds."))
+        print(f"  Start it manually: {cyan(f'uv run {extra}--directory {install_dir} python ui_server/server.py')}")
+        return
 
+    print(f"{green('✓')} Dashboard running at {cyan(url)}")
+    print("  Opening browser…")
     import webbrowser
     webbrowser.open(url)
     print(f"  If the browser does not open, navigate to: {cyan(url)}")
@@ -1838,7 +1883,7 @@ def _create_shortcut_linux(*, also_desktop: bool = True) -> None:
     # Use the absolute uv path so graphical launchers that don't inherit $PATH
     # can still find the binary.
     uv_bin = shutil.which("uv") or "uv"
-    if is_installed_package() and shutil.which("agent-context-local-ui"):
+    if _is_ui_entry_point_installed():
         exec_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
     else:
         extra_parts = f"{extra_flag} " if extra_flag else ""
@@ -1904,7 +1949,7 @@ def _create_shortcut_macos() -> None:
     extra_flag = _gpu_extra_flag().strip()
 
     uv_bin = shutil.which("uv") or "uv"
-    if is_installed_package() and shutil.which("agent-context-local-ui"):
+    if _is_ui_entry_point_installed():
         launch_cmd = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
     else:
         extra_parts = f"{extra_flag} " if extra_flag else ""
@@ -1955,7 +2000,7 @@ def _create_shortcut_windows() -> None:
     extra_flag = _gpu_extra_flag().strip()
 
     uv_bin = shutil.which("uv") or "uv"
-    if is_installed_package() and shutil.which("agent-context-local-ui"):
+    if _is_ui_entry_point_installed():
         target = shutil.which("agent-context-local-ui") or "agent-context-local-ui"
         arguments = ""
     else:
@@ -1990,8 +2035,15 @@ def _create_shortcut_windows() -> None:
             check=True, capture_output=True, text=True,
         )
         print(f"{green('✓')} Desktop shortcut created: {shortcut_path}")
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        print(red(f"✗ Could not create Windows shortcut: {exc}"))
+    except subprocess.CalledProcessError as exc:
+        err_detail = (exc.stderr or "").strip()
+        print(red(f"✗ Could not create Windows shortcut (PowerShell exit {exc.returncode})."))
+        if err_detail:
+            print(f"  PowerShell error: {err_detail}")
+        print("  Create it manually: right-click Desktop → New → Shortcut")
+        return
+    except FileNotFoundError:
+        print(red("✗ powershell.exe not found in PATH — cannot create shortcut automatically."))
         print("  Create it manually: right-click Desktop → New → Shortcut")
         return
 

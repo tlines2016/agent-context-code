@@ -156,6 +156,20 @@ export interface EmbeddingModelInfo {
 export interface ModelsResponse {
   models: EmbeddingModelInfo[]
   count: number
+  gpu_available: boolean
+}
+
+export interface RerankerModelInfo {
+  model_name: string
+  short_name: string
+  description: string
+  recommended_for: string
+  gpu_default: boolean
+}
+
+export interface RerankersResponse {
+  rerankers: RerankerModelInfo[]
+  count: number
 }
 
 export interface Settings {
@@ -212,4 +226,9 @@ export const api = {
     request<Settings>('PUT', '/api/v1/settings', update),
 
   listModels: () => request<ModelsResponse>('GET', '/api/v1/models'),
+
+  listRerankers: () => request<RerankersResponse>('GET', '/api/v1/rerankers'),
+
+  restartServer: () =>
+    request<{ message: string }>('POST', '/api/v1/server/restart'),
 }
