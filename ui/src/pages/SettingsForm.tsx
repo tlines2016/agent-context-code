@@ -10,6 +10,7 @@ import { useState, useEffect, useId, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Settings, Save, Loader2, CheckCircle, XCircle, AlertTriangle, RotateCw } from 'lucide-react'
 import { api, type SettingsUpdate } from '@/api/client'
+import ConfirmDialog from '@/components/ConfirmDialog'
 
 export default function SettingsForm() {
   const qc = useQueryClient()
@@ -48,6 +49,8 @@ export default function SettingsForm() {
   const [restartRequired, setRestartRequired] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [restartFailed, setRestartFailed] = useState(false)
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false)
+  const [riskSummary, setRiskSummary] = useState<string[]>([])
   // Track initial model/reranker values to detect changes that require restart.
   const [savedModelName, setSavedModelName] = useState('')
   const [savedRerankerModel, setSavedRerankerModel] = useState('')
@@ -86,7 +89,7 @@ export default function SettingsForm() {
     },
   })
 
-  function handleSave() {
+  function submitSettings() {
     const update: SettingsUpdate = {
       embedding_model: modelName ? { model_name: modelName } : undefined,
       reranker: {
@@ -101,6 +104,27 @@ export default function SettingsForm() {
       },
     }
     updateMutation.mutate(update)
+  }
+
+  function handleSave() {
+    const gpuAvailable = modelsData?.gpu_available ?? rerankersData?.gpu_available ?? false
+    const selectedEmbedding = modelsData?.models.find((m) => m.model_name === modelName)
+    const selectedReranker = rerankersData?.rerankers.find((r) => r.model_name === rerankerModel)
+
+    const risks: string[] = []
+    if (!gpuAvailable && selectedEmbedding && selectedEmbedding.cpu_feasible === false) {
+      risks.push(`${selectedEmbedding.short_name || selectedEmbedding.model_name} is not CPU-feasible`)
+    }
+    if (!gpuAvailable && rerankerEnabled && selectedReranker && selectedReranker.cpu_feasible === false) {
+      risks.push(`${selectedReranker.short_name || selectedReranker.model_name} reranker is not CPU-feasible`)
+    }
+
+    if (risks.length > 0) {
+      setRiskSummary(risks)
+      setRiskDialogOpen(true)
+      return
+    }
+    submitSettings()
   }
 
   async function handleRestart() {
@@ -136,6 +160,18 @@ export default function SettingsForm() {
 
   return (
     <div className="p-6 space-y-6 max-w-2xl">
+      <ConfirmDialog
+        open={riskDialogOpen}
+        title="Potentially Heavy Model Selection"
+        message={`This system currently reports no GPU backend. ${riskSummary.join('; ')}. Saving may cause very slow performance or memory pressure on CPU-only machines.`}
+        confirmLabel="Save Anyway"
+        onCancel={() => setRiskDialogOpen(false)}
+        onConfirm={() => {
+          setRiskDialogOpen(false)
+          submitSettings()
+        }}
+      />
+
       {/* Header */}
       <div className="flex items-center gap-2">
         <Settings size={18} className="text-indigo-400" />
@@ -194,14 +230,21 @@ export default function SettingsForm() {
                 {modelsData?.models.map((m) => (
                   <option key={m.model_name} value={m.model_name}>
                     {m.short_name || m.model_name}
-                    {m.gpu_default ? ' · GPU recommended' : ' · CPU friendly'}
                     {m.embedding_dimension ? ` · ${m.embedding_dimension}d` : ''}
                   </option>
                 ))}
               </select>
               {(() => {
-                const desc = modelsData?.models.find((m) => m.model_name === modelName)?.description
-                return desc ? <p className="mt-1.5 text-xs text-slate-500">{desc}</p> : null
+                const selected = modelsData?.models.find((m) => m.model_name === modelName)
+                if (!selected) return null
+                return (
+                  <div className="mt-1.5 space-y-1">
+                    <p className="text-xs text-slate-500">{selected.description}</p>
+                    {selected.recommended_for && (
+                      <p className="text-xs text-slate-500">Best for: {selected.recommended_for}</p>
+                    )}
+                  </div>
+                )
               })()}
             </div>
           </Section>
@@ -234,13 +277,20 @@ export default function SettingsForm() {
                     {rerankersData?.rerankers.map((r) => (
                       <option key={r.model_name} value={r.model_name}>
                         {r.short_name || r.model_name}
-                        {r.gpu_default ? ' · GPU recommended' : ' · CPU friendly'}
                       </option>
                     ))}
                   </select>
                   {(() => {
-                    const desc = rerankersData?.rerankers.find((r) => r.model_name === rerankerModel)?.description
-                    return desc ? <p className="mt-1.5 text-xs text-slate-500">{desc}</p> : null
+                    const selected = rerankersData?.rerankers.find((r) => r.model_name === rerankerModel)
+                    if (!selected) return null
+                    return (
+                      <div className="mt-1.5 space-y-1">
+                        <p className="text-xs text-slate-500">{selected.description}</p>
+                        {selected.recommended_for && (
+                          <p className="text-xs text-slate-500">Best for: {selected.recommended_for}</p>
+                        )}
+                      </div>
+                    )
                   })()}
                 </div>
                 <div className="grid grid-cols-2 gap-3">

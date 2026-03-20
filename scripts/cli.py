@@ -2012,29 +2012,39 @@ def _create_shortcut_windows() -> None:
             f'--directory "{install_dir}" python ui_server/server.py'
         )
 
-    desktop = Path.home() / "Desktop"
-    shortcut_path = desktop / "Agent Context Dashboard.lnk"
-
     def _ps_str(s: str) -> str:
         # Escape single-quotes inside PowerShell string literals.
         return s.replace("'", "''")
 
+    # Use the Shell API to resolve the actual Desktop path — handles OneDrive
+    # folder redirection, enterprise policies, and non-standard setups.
     ps_script = (
+        "$Desktop = [Environment]::GetFolderPath('Desktop')\n"
+        "if (-not $Desktop -or -not (Test-Path $Desktop)) {\n"
+        "  Write-Error 'Could not resolve Desktop folder path.'\n"
+        "  exit 1\n"
+        "}\n"
+        "$ShortcutPath = Join-Path $Desktop 'Agent Context Dashboard.lnk'\n"
         "$WshShell = New-Object -ComObject WScript.Shell\n"
-        f"$Shortcut = $WshShell.CreateShortcut('{_ps_str(str(shortcut_path))}')\n"
+        "$Shortcut = $WshShell.CreateShortcut($ShortcutPath)\n"
         f"$Shortcut.TargetPath = '{_ps_str(target)}'\n"
         f"$Shortcut.Arguments = '{_ps_str(arguments)}'\n"
         "$Shortcut.Description = 'Open Agent Context Local Web Dashboard'\n"
         f"$Shortcut.WorkingDirectory = '{_ps_str(str(install_dir))}'\n"
         "$Shortcut.Save()\n"
+        "Write-Output $ShortcutPath\n"
     )
 
+    # Fallback display path — the actual path is determined by PowerShell above.
+    shortcut_display = str(Path.home() / "Desktop" / "Agent Context Dashboard.lnk")
+
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
             check=True, capture_output=True, text=True,
         )
-        print(f"{green('✓')} Desktop shortcut created: {shortcut_path}")
+        actual_path = (result.stdout or "").strip() or shortcut_display
+        print(f"{green('✓')} Desktop shortcut created: {actual_path}")
     except subprocess.CalledProcessError as exc:
         err_detail = (exc.stderr or "").strip()
         print(red(f"✗ Could not create Windows shortcut (PowerShell exit {exc.returncode})."))

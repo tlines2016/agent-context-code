@@ -47,6 +47,8 @@ class EmbeddingModelConfig:
     description: str = ""
     recommended_for: str = ""
     gpu_default: bool = False
+    vram_requirement_gb: float = 0.0
+    cpu_feasible: bool = True
     trust_remote_code: bool = False
 
 
@@ -87,6 +89,8 @@ MODEL_CATALOG = {
         embedding_dimension=1024,
         description="CPU-friendly, non-gated, 1024-dim. Better quality than mxbai-xsmall at the cost of speed.",
         recommended_for="Users who want higher embedding quality on CPU and can tolerate slower indexing.",
+        vram_requirement_gb=2.0,
+        cpu_feasible=True,
         gpu_default=True,
     ),
     # ── Unsloth-optimised Qwen3-Embedding-4B ─────────────────────────────
@@ -104,6 +108,8 @@ MODEL_CATALOG = {
         embedding_dimension=QWEN3_4B_EMBEDDING_DIM,
         description="Unsloth-optimised Qwen3-Embedding-4B for RTX 5080 (16 GB VRAM).",
         recommended_for="Primary GPU-accelerated model for high-quality local code search.",
+        vram_requirement_gb=8.0,
+        cpu_feasible=False,
     ),
     # ── Unsloth-optimised Qwen3-Embedding-8B ─────────────────────────
     # Ranks #1 on MTEB multilingual.  Requires 24 GB+ VRAM recommended
@@ -118,6 +124,8 @@ MODEL_CATALOG = {
         embedding_dimension=4096,
         description="Unsloth-optimised Qwen3-Embedding-8B — top MTEB multilingual quality, 24 GB+ VRAM recommended.",
         recommended_for="Users with high-end GPUs (RTX 4090/5090, A100) who want maximum embedding quality.",
+        vram_requirement_gb=24.0,
+        cpu_feasible=False,
     ),
     "Salesforce/SFR-Embedding-Code-400M_R": EmbeddingModelConfig(
         model_name="Salesforce/SFR-Embedding-Code-400M_R",

@@ -63,9 +63,16 @@ class SettingsUpdate(BaseModel):
 @router.get("/settings")
 async def get_settings() -> Dict[str, Any]:
     """Return the full install_config.json contents plus the storage path."""
-    config = load_local_install_config()
-    config["_storage_dir"] = str(get_storage_dir())
-    return config
+    try:
+        config = load_local_install_config()
+        config["_storage_dir"] = str(get_storage_dir())
+        return config
+    except Exception as exc:
+        logger.error("Failed to read settings: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to read settings. Check server logs for details.",
+        ) from exc
 
 
 @router.put("/settings")
@@ -102,4 +109,7 @@ async def update_settings(update: SettingsUpdate) -> Dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("Settings update failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Settings update failed. Check server logs for details.",
+        ) from exc
