@@ -56,6 +56,16 @@ function StatusBar() {
     queryFn: api.health,
     refetchInterval: 30_000,
   })
+  const { data: indexData } = useQuery({
+    queryKey: ['index-status'],
+    queryFn: api.indexStatus,
+    refetchInterval: 60_000,
+  })
+
+  const computeLabel = indexData?.model_information.detected_label
+    ?? indexData?.model_information.compute_label
+    ?? (indexData?.model_information.device ? `device:${indexData.model_information.device}` : null)
+  const syncLabel = indexData?.sync_status === 'degraded' ? 'degraded' : 'synced'
 
   return (
     <div className="fixed bottom-3 right-3 z-40">
@@ -66,6 +76,20 @@ function StatusBar() {
             <span>v{data.version}</span>
             <span className="text-slate-600">·</span>
             <span className="text-green-400">connected</span>
+            {computeLabel && (
+              <>
+                <span className="text-slate-600">·</span>
+                <span>{computeLabel}</span>
+              </>
+            )}
+            {indexData && (
+              <>
+                <span className="text-slate-600">·</span>
+                <span className={syncLabel === 'degraded' ? 'text-yellow-400' : 'text-green-400'}>
+                  {syncLabel}
+                </span>
+              </>
+            )}
           </>
         ) : (
           <>

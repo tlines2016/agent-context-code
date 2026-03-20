@@ -8,15 +8,16 @@
  * - Recent query history chips for quick re-use
  * - Results rendered with ResultCard
  * - "Export all as Markdown" and "Export as AI prompt" buttons
- * - Clear button to reset the search
+ * - Sparkles icon for the AI-powered search action
  * - aria-live regions for accessible status announcements
  */
 import { useState, useRef, useEffect, useId, type KeyboardEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Search, SlidersHorizontal, FileDown, Loader2, X, BrainCircuit } from 'lucide-react'
+import { Sparkles, SlidersHorizontal, FileDown, Loader2, Search, BrainCircuit } from 'lucide-react'
 import { api, type SearchResponse } from '@/api/client'
 import { useStore } from '@/store/useStore'
 import ResultCard from '@/components/ResultCard'
+import InfoPopover from '@/components/InfoPopover'
 import { copyToClipboard, formatAsMarkdown, formatAsPromptContext } from '@/lib/utils'
 
 const CHUNK_TYPES = ['', 'function', 'class', 'method', 'module', 'interface', 'struct']
@@ -90,18 +91,10 @@ export default function SearchPanel() {
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter submits; Shift+Enter inserts a newline (standard across platforms).
       e.preventDefault()
       handleSearch()
     }
-  }
-
-  function handleClear() {
-    // Invalidate any in-flight request so its onSuccess callback is discarded.
-    requestIdRef.current++
-    mutation.reset()
-    setQuery('')
-    setResults(null)
-    queryRef.current?.focus()
   }
 
   function applyHistoryQuery(q: string) {
@@ -179,43 +172,30 @@ export default function SearchPanel() {
 
       {/* Search form */}
       <div className="border-b border-slate-700/50 bg-[#13151f] p-4 space-y-3">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-3 text-slate-500" aria-hidden="true" />
-            <textarea
-              ref={queryRef}
-              id="search-query"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Search your codebase semantically… (Ctrl+Enter to search)"
-              rows={2}
-              aria-label="Search query"
-              aria-describedby={statusId}
-              className="input pl-9 resize-none"
-            />
-          </div>
-          {/* Clear button — only shown when there is something to clear */}
-          {(query || results) && (
-            <button
-              onClick={handleClear}
-              className="btn-ghost self-stretch px-3"
-              aria-label="Clear search"
-              title="Clear search"
-            >
-              <X size={15} aria-hidden="true" />
-            </button>
-          )}
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-3 text-slate-500" aria-hidden="true" />
+          <textarea
+            ref={queryRef}
+            id="search-query"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search your codebase semantically… (Enter to search)"
+            rows={2}
+            aria-label="Search query"
+            aria-describedby={statusId}
+            className="input pl-9 pr-14 resize-none"
+          />
           <button
             onClick={handleSearch}
             disabled={!query.trim() || mutation.isPending}
-            className="btn-primary self-stretch px-5"
+            className="btn-primary absolute bottom-2.5 right-2.5 px-3 py-2"
             aria-label={mutation.isPending ? 'Searching…' : 'Search'}
           >
             {mutation.isPending ? (
-              <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+              <Loader2 size={14} className="animate-spin" aria-hidden="true" />
             ) : (
-              <Search size={16} aria-hidden="true" />
+              <Sparkles size={14} aria-hidden="true" />
             )}
           </button>
         </div>
@@ -223,9 +203,17 @@ export default function SearchPanel() {
         {/* k slider + filter toggle */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <label htmlFor={sliderId} className="text-xs text-slate-500">
-              Results: {k}
-            </label>
+            <InfoPopover
+              title="Results slider"
+              triggerMode="hover"
+              trigger={<span className="text-xs text-slate-500">Results: {k}</span>}
+              panelClassName="w-64"
+            >
+              <p>
+                Controls how many top matches to return. Higher values broaden recall but can add latency.
+                Start around 5-10, then increase if key files are missing.
+              </p>
+            </InfoPopover>
             <input
               id={sliderId}
               type="range"
@@ -253,7 +241,23 @@ export default function SearchPanel() {
           {showFilters && (
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label" htmlFor="filter-file-pattern">File pattern (glob)</label>
+                <label className="label flex items-center gap-1.5" htmlFor="filter-file-pattern">
+                  File pattern (glob)
+                  <InfoPopover title="File pattern cheat sheet">
+                    <div className="space-y-2">
+                      <p>Use glob patterns to narrow which files are searched.</p>
+                      <ul className="space-y-1 text-slate-400">
+                        <li><code>**/*.py</code> - Python files only</li>
+                        <li><code>{'ui/src/**/*.{ts,tsx}'}</code> - frontend TS/TSX</li>
+                        <li><code>**/tests/**/*.py</code> - Python test files</li>
+                        <li><code>**/*service*.py</code> - service-related Python modules</li>
+                      </ul>
+                      <p className="text-slate-500">
+                        Leave empty to search all indexed files.
+                      </p>
+                    </div>
+                  </InfoPopover>
+                </label>
                 <input
                   id="filter-file-pattern"
                   type="text"
@@ -264,7 +268,23 @@ export default function SearchPanel() {
                 />
               </div>
               <div>
-                <label className="label" htmlFor="filter-chunk-type">Chunk type</label>
+                <label className="label flex items-center gap-1.5" htmlFor="filter-chunk-type">
+                  Chunk type
+                  <InfoPopover title="Chunk type cheat sheet">
+                    <div className="space-y-2">
+                      <p>Filter results by code structure when you know what you want.</p>
+                      <ul className="space-y-1 text-slate-400">
+                        <li><code>function</code> - standalone functions/helpers</li>
+                        <li><code>class</code> / <code>interface</code> / <code>struct</code> - type definitions</li>
+                        <li><code>method</code> - behavior inside classes/structs</li>
+                        <li><code>module</code> - top-level module/file chunks</li>
+                      </ul>
+                      <p className="text-slate-500">
+                        Use <code>Any type</code> first when exploring broadly.
+                      </p>
+                    </div>
+                  </InfoPopover>
+                </label>
                 <select
                   id="filter-chunk-type"
                   value={chunkType}
@@ -385,11 +405,15 @@ export default function SearchPanel() {
               indexed codebase.
             </p>
             <p className="text-slate-600 text-xs mt-2">
-              Tip: press{' '}
+              Press{' '}
               <kbd className="rounded bg-slate-800 px-1 py-0.5 font-mono text-slate-400">
-                Ctrl+Enter
+                Enter
               </kbd>{' '}
-              to search
+              to search,{' '}
+              <kbd className="rounded bg-slate-800 px-1 py-0.5 font-mono text-slate-400">
+                Shift+Enter
+              </kbd>{' '}
+              for a new line
             </p>
           </div>
         )}

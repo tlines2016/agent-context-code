@@ -40,11 +40,16 @@ async def list_models() -> Dict[str, Any]:
                 "recommended_for": config.recommended_for,
                 "embedding_dimension": config.embedding_dimension,
                 "gpu_default": config.gpu_default,
+                "vram_requirement_gb": getattr(config, "vram_requirement_gb", 0.0),
+                "cpu_feasible": getattr(config, "cpu_feasible", True),
             })
         return {"models": models, "count": len(models), "gpu_available": gpu_available}
     except Exception as exc:
-        logger.error("Failed to load model catalog: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Failed to load model catalog: {exc}")
+        logger.error("Failed to load model catalog: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load model catalog. Check server logs for details.",
+        )
 
 
 @router.get("/rerankers")
@@ -52,6 +57,7 @@ async def list_rerankers() -> Dict[str, Any]:
     """Return available reranker models from the catalog."""
     try:
         from reranking.reranker_catalog import RERANKER_CATALOG
+        gpu_available = _detect_gpu_available()
         rerankers: List[Dict[str, Any]] = []
         for model_name, config in RERANKER_CATALOG.items():
             rerankers.append({
@@ -60,8 +66,13 @@ async def list_rerankers() -> Dict[str, Any]:
                 "description": config.description,
                 "recommended_for": getattr(config, "recommended_for", ""),
                 "gpu_default": config.gpu_default,
+                "vram_requirement_gb": getattr(config, "vram_requirement_gb", 0.0),
+                "cpu_feasible": getattr(config, "cpu_feasible", True),
             })
-        return {"rerankers": rerankers, "count": len(rerankers)}
+        return {"rerankers": rerankers, "count": len(rerankers), "gpu_available": gpu_available}
     except Exception as exc:
-        logger.error("Failed to load reranker catalog: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Failed to load reranker catalog: {exc}")
+        logger.error("Failed to load reranker catalog: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load reranker catalog. Check server logs for details.",
+        )

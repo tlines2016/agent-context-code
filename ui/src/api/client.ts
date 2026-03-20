@@ -123,6 +123,12 @@ export interface IndexStatusResponse {
     model_name: string
     embedding_dimension?: number
     device?: string
+    compute_backend?: 'cpu' | 'cuda' | 'rocm' | 'mps'
+    compute_label?: string
+    device_source?: 'runtime' | 'detected'
+    detected_device?: string
+    detected_backend?: 'cpu' | 'cuda' | 'rocm' | 'mps'
+    detected_label?: string
   }
   storage_directory: string
   sync_status: 'synced' | 'degraded'
@@ -151,6 +157,8 @@ export interface EmbeddingModelInfo {
   recommended_for: string
   embedding_dimension?: number
   gpu_default: boolean
+  vram_requirement_gb?: number
+  cpu_feasible?: boolean
 }
 
 export interface ModelsResponse {
@@ -165,11 +173,14 @@ export interface RerankerModelInfo {
   description: string
   recommended_for: string
   gpu_default: boolean
+  vram_requirement_gb?: number
+  cpu_feasible?: boolean
 }
 
 export interface RerankersResponse {
   rerankers: RerankerModelInfo[]
   count: number
+  gpu_available?: boolean
 }
 
 export interface Settings {
@@ -220,6 +231,12 @@ export const api = {
   clearIndex: () =>
     request<{ success: boolean; message: string }>('DELETE', '/api/v1/index/clear'),
 
+  clearProjectIndex: (project_path: string) =>
+    request<{ success: boolean; message: string }>('POST', '/api/v1/projects/index', { project_path }),
+
+  removeProject: (project_path: string) =>
+    request<{ success: boolean; message: string }>('POST', '/api/v1/projects/remove', { project_path }),
+
   getSettings: () => request<Settings>('GET', '/api/v1/settings'),
 
   updateSettings: (update: SettingsUpdate) =>
@@ -231,4 +248,7 @@ export const api = {
 
   restartServer: () =>
     request<{ message: string }>('POST', '/api/v1/server/restart'),
+
+  restartMcp: () =>
+    request<{ message: string; stopped: number }>('POST', '/api/v1/server/restart-mcp'),
 }

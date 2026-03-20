@@ -10,6 +10,7 @@ import os
 import json
 import math
 import time
+import shutil
 import asyncio
 import logging
 from pathlib import Path
@@ -69,6 +70,36 @@ class CodeSearchServer:
         if ensure_parent:
             graph_path.parent.mkdir(parents=True, exist_ok=True)
         return graph_path
+
+    @staticmethod
+    def _compute_backend_from_device(device: Optional[str]) -> str:
+        """Normalize runtime device strings into a stable backend identifier."""
+        if not device:
+            return "cpu"
+
+        value = str(device).lower()
+        if value.startswith("mps"):
+            return "mps"
+        if value.startswith("cuda") or value.startswith("hip") or value.startswith("rocm"):
+            try:
+                import torch
+                if getattr(torch.version, "hip", None):
+                    return "rocm"
+            except Exception:
+                pass
+            return "cuda"
+        return "cpu"
+
+    @staticmethod
+    def _compute_label(backend: str) -> str:
+        """Return a display label tailored for the dashboard UI."""
+        if backend == "cuda":
+            return "GPU (CUDA)"
+        if backend == "rocm":
+            return "GPU (ROCm)"
+        if backend == "mps":
+            return "GPU (MPS)"
+        return "CPU"
 
     @staticmethod
     def _project_storage_key(project_path: str) -> tuple[Path, str, str]:
@@ -1066,14 +1097,35 @@ class CodeSearchServer:
             embedder = self.embedder()
             model_info = embedder.get_model_info()
 
+            # Detect best available backend separately from runtime model device.
+            # Runtime device may read as CPU when models are not loaded/offloaded,
+            # but operators still need to know whether GPU acceleration is available.
+            try:
+                from common_utils import detect_gpu
+                detected_device = detect_gpu()
+            except Exception:
+                detected_device = "cpu"
+
             # When the model hasn't been lazily loaded yet, supplement with
             # config-level information so the dashboard can still display the
             # model name and configured dimension.
+            device_source = "runtime"
             if model_info.get("status") == "not_loaded":
                 model_info["model_name"] = embedder.model_config.model_name
                 dim = getattr(embedder.model_config, "embedding_dimension", None)
                 if dim:
                     model_info["embedding_dimension"] = dim
+                # No runtime torch device exists yet — use detected backend.
+                model_info["device"] = detected_device
+                device_source = "detected"
+
+            backend = self._compute_backend_from_device(model_info.get("device"))
+            model_info["compute_backend"] = backend
+            model_info["compute_label"] = self._compute_label(backend)
+            model_info["device_source"] = device_source
+            model_info["detected_device"] = detected_device
+            model_info["detected_backend"] = self._compute_backend_from_device(detected_device)
+            model_info["detected_label"] = self._compute_label(model_info["detected_backend"])
 
             response = {
                 "index_statistics": stats,
@@ -1407,6 +1459,116 @@ class CodeSearchServer:
             error_msg = f"Clear index failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
             return json.dumps({"error": error_msg, "suggestion": "Ensure a project is active. Use get_index_status() to check the current state."})
+
+    def clear_project_index(self, project_path: str) -> str:
+        """Clear index artifacts for a specific project while keeping metadata."""
+        try:
+            project_path_obj = Path(project_path).resolve()
+            project_dir = self._project_storage_dir(str(project_path_obj), create_if_missing=False)
+            if not project_dir.exists():
+                return json.dumps({
+                    "error": f"Project is not registered: {project_path_obj}",
+                    "suggestion": "Use list_projects() to confirm available projects."
+                })
+
+            is_active_project = (
+                self._current_project is not None
+                and str(Path(self._current_project).resolve()) == str(project_path_obj)
+            )
+
+            if is_active_project:
+                # Close active handles before removing files on Windows.
+                self._close_cached_graph()
+                self._index_manager = None
+                self._searcher = None
+
+            index_dir = project_dir / "index"
+            index_cleared = True
+            if index_dir.exists():
+                try:
+                    shutil.rmtree(index_dir)
+                except Exception as exc:
+                    logger.warning("Failed to remove index directory for %s: %s", project_path_obj, exc)
+                    index_cleared = False
+
+            snapshot_cleared = False
+            try:
+                from merkle.snapshot_manager import SnapshotManager
+                SnapshotManager().delete_snapshot(str(project_path_obj))
+                snapshot_cleared = True
+            except Exception as exc:
+                logger.warning("Failed to delete snapshot metadata for %s: %s", project_path_obj, exc)
+
+            return json.dumps({
+                "success": index_cleared and snapshot_cleared,
+                "message": (
+                    "Project index cleared"
+                    if index_cleared and snapshot_cleared
+                    else "Failed to clear all project index artifacts"
+                ),
+                "project_path": str(project_path_obj),
+                "index_cleared": index_cleared,
+                "snapshot_cleared": snapshot_cleared,
+            }, indent=2)
+        except Exception as e:
+            error_msg = f"Clear project index failed: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({
+                "error": error_msg,
+                "suggestion": "Verify the project path from list_projects() and retry."
+            })
+
+    def remove_project(self, project_path: str) -> str:
+        """Remove a project registration and all persisted index artifacts."""
+        try:
+            project_path_obj = Path(project_path).resolve()
+            project_dir = self._project_storage_dir(str(project_path_obj), create_if_missing=False)
+            if not project_dir.exists():
+                return json.dumps({
+                    "error": f"Project is not registered: {project_path_obj}",
+                    "suggestion": "Use list_projects() to confirm available projects."
+                })
+
+            clear_result = json.loads(self.clear_project_index(str(project_path_obj)))
+            if clear_result.get("error"):
+                return json.dumps(clear_result)
+            if not clear_result.get("success", False):
+                return json.dumps({
+                    "error": f"Unable to fully clear index artifacts before removing project: {project_path_obj}",
+                    "suggestion": "Resolve clear_project_index() issues first, then retry remove_project().",
+                    "clear_result": clear_result,
+                })
+
+            try:
+                shutil.rmtree(project_dir)
+            except Exception as exc:
+                logger.error("Failed to remove project directory %s: %s", project_dir, exc)
+                return json.dumps({
+                    "error": f"Failed to remove project directory: {project_dir}",
+                    "suggestion": "Check file permissions and retry."
+                })
+
+            if (
+                self._current_project is not None
+                and str(Path(self._current_project).resolve()) == str(project_path_obj)
+            ):
+                self._current_project = None
+                self._close_cached_graph()
+                self._index_manager = None
+                self._searcher = None
+
+            return json.dumps({
+                "success": True,
+                "message": f"Removed project: {project_path_obj.name}",
+                "project_path": str(project_path_obj),
+            }, indent=2)
+        except Exception as e:
+            error_msg = f"Remove project failed: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({
+                "error": error_msg,
+                "suggestion": "Verify the project path from list_projects() and retry."
+            })
 
     def get_graph_context(
         self,

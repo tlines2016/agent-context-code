@@ -1,7 +1,7 @@
 /**
  * HealthDashboard — shows index statistics, sync status, and re-index controls.
  */
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BarChart,
@@ -25,99 +25,13 @@ import {
   Loader2,
 } from 'lucide-react'
 import { api } from '@/api/client'
+import ConfirmDialog from '@/components/ConfirmDialog'
 import { cn } from '@/lib/utils'
 
 const CHART_COLORS = [
   '#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe',
   '#34d399', '#6ee7b7', '#fbbf24', '#f87171',
 ]
-
-// ---------------------------------------------------------------------------
-// ConfirmDialog — accessible, keyboard-navigable replacement for window.confirm
-// ---------------------------------------------------------------------------
-
-interface ConfirmDialogProps {
-  open: boolean
-  title: string
-  message: string
-  confirmLabel?: string
-  onConfirm: () => void
-  onCancel: () => void
-}
-
-function ConfirmDialog({
-  open,
-  title,
-  message,
-  confirmLabel = 'Confirm',
-  onConfirm,
-  onCancel,
-}: ConfirmDialogProps) {
-  const confirmBtnRef = useRef<HTMLButtonElement>(null)
-
-  // Move focus to the confirm button when the dialog opens.
-  useEffect(() => {
-    if (open) confirmBtnRef.current?.focus()
-  }, [open])
-
-  // Close on Escape key.
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [open, onCancel])
-
-  if (!open) return null
-
-  return (
-    // Backdrop — clicking outside cancels the dialog.
-    <div
-      role="presentation"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={onCancel}
-    >
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
-        aria-describedby="confirm-dialog-desc"
-        className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-6 shadow-2xl"
-        // Prevent clicks inside the dialog from reaching the backdrop.
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 mb-3">
-          <AlertTriangle size={18} className="text-amber-400 shrink-0" />
-          <h2 id="confirm-dialog-title" className="text-slate-100 font-semibold">
-            {title}
-          </h2>
-        </div>
-        <p id="confirm-dialog-desc" className="text-sm text-slate-400 mb-6">
-          {message}
-        </p>
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="btn-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            ref={confirmBtnRef}
-            onClick={onConfirm}
-            className="btn-danger"
-          >
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 
 function SyncBadge({ status }: { status: 'synced' | 'degraded' }) {
   if (status === 'synced') {
@@ -130,6 +44,19 @@ function SyncBadge({ status }: { status: 'synced' | 'degraded' }) {
   return (
     <span className="flex items-center gap-1 text-yellow-400 text-sm">
       <AlertTriangle size={14} /> Degraded
+    </span>
+  )
+}
+
+function ComputeBadge({ label }: { label: string }) {
+  const text = label.toUpperCase()
+  const isGpu = text.includes('GPU') || text.includes('CUDA') || text.includes('ROCM') || text.includes('MPS')
+  return (
+    <span className={cn(
+      'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+      isGpu ? 'bg-indigo-900/40 text-indigo-300' : 'bg-slate-700 text-slate-300',
+    )}>
+      {isGpu ? 'GPU' : 'CPU'}
     </span>
   )
 }
@@ -170,6 +97,8 @@ export default function HealthDashboard() {
 
   const stats = data!.index_statistics
   const model = data!.model_information
+  const computeLabel = model.detected_label ?? model.compute_label ?? (model.device ? `Device: ${model.device}` : 'CPU')
+  const runtimeLabel = model.compute_label ?? (model.device ? `Device: ${model.device}` : 'CPU')
 
   // Prepare chart data from language/type breakdowns if available
   const langData = stats.languages
@@ -211,6 +140,7 @@ export default function HealthDashboard() {
         <div className="flex items-center gap-2">
           <Activity size={18} className="text-indigo-400" />
           <h1 className="text-lg font-semibold text-slate-100">Index Health</h1>
+          <ComputeBadge label={computeLabel} />
         </div>
         <div className="flex gap-2">
           <button
@@ -238,7 +168,6 @@ export default function HealthDashboard() {
         <StatCard label="Model" value={model.model_name?.split('/').pop() ?? '—'} small />
         <StatCard label="Sync Status" value={<SyncBadge status={data!.sync_status} />} />
       </div>
-
       {data!.degraded_reason && (
         <div className="rounded-md border border-yellow-700/50 bg-yellow-900/20 p-3 text-xs text-yellow-300 flex items-center gap-2">
           <AlertTriangle size={14} />
@@ -292,6 +221,8 @@ export default function HealthDashboard() {
               </Pie>
               <Tooltip
                 contentStyle={{ background: '#1e2130', border: '1px solid #334155', borderRadius: 6, fontSize: 12 }}
+                labelStyle={{ color: '#e2e8f0' }}
+                itemStyle={{ color: '#e2e8f0' }}
               />
               <Legend iconSize={10} wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
             </PieChart>
@@ -306,7 +237,14 @@ export default function HealthDashboard() {
         <DetailRow label="Merkle snapshot" value={data!.snapshot_exists ? '✓ Present' : '✗ Missing'} ok={data!.snapshot_exists} />
         <DetailRow label="Storage directory" value={data!.storage_directory} mono />
         <DetailRow label="Embedding dimension" value={model.embedding_dimension?.toString() ?? '—'} />
-        <DetailRow label="Compute device" value={model.device ?? '—'} />
+        <DetailRow
+          label="Compute available"
+          value={computeLabel}
+        />
+        <DetailRow
+          label="Model runtime device"
+          value={model.device_source === 'detected' ? `${runtimeLabel} (not loaded yet)` : runtimeLabel}
+        />
         {stats.last_indexed && (
           <DetailRow label="Last indexed" value={new Date(stats.last_indexed).toLocaleString()} />
         )}
